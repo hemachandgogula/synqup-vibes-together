@@ -1,13 +1,38 @@
 
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, Navigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Navbar } from '@/components/Navbar';
+import { toast } from 'sonner';
 
 const Login = () => {
+  const { user, signIn } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  if (user) {
+    return <Navigate to="/room" />;
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setIsLoading(true);
+      await signIn(email, password);
+      toast.success('Successfully logged in!');
+    } catch (error) {
+      toast.error('Failed to log in. Please check your credentials.');
+      console.error('Login error:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <>
       <Navbar />
@@ -19,21 +44,30 @@ const Login = () => {
               Enter your email to sign in to your account
             </p>
           </div>
-          <div className="grid gap-4">
+          <form onSubmit={handleSubmit} className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
                 placeholder="m@example.com"
                 type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 autoCapitalize="none"
                 autoComplete="email"
                 autoCorrect="off"
+                required
               />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" />
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
             </div>
             <div className="flex items-center space-x-2">
               <Checkbox id="remember" />
@@ -44,10 +78,14 @@ const Login = () => {
                 Remember me
               </label>
             </div>
-            <Button className="bg-synqup-purple hover:bg-synqup-dark-purple text-white">
-              Sign In
+            <Button
+              className="bg-synqup-purple hover:bg-synqup-dark-purple text-white"
+              type="submit"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Signing in...' : 'Sign In'}
             </Button>
-          </div>
+          </form>
           <div className="mt-4 text-center text-sm">
             Don't have an account?{" "}
             <Link to="/signup" className="underline hover:text-synqup-purple">

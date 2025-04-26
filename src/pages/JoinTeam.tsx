@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,10 +16,11 @@ const JoinTeam = () => {
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
 
-  if (!user) {
-    navigate('/login');
-    return null;
-  }
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,15 +29,27 @@ const JoinTeam = () => {
       return;
     }
 
+    if (!user) {
+      toast.error('You must be logged in to join a team');
+      navigate('/login');
+      return;
+    }
+
     setLoading(true);
     try {
+      console.log('Joining team with code:', code.trim());
       const { data: room, error: roomError } = await supabase
         .from('rooms')
         .select('id')
         .eq('room_code', code.trim())
         .single();
 
-      if (roomError) throw new Error('Invalid team code');
+      if (roomError) {
+        console.error('Room error:', roomError);
+        throw new Error('Invalid team code');
+      }
+
+      console.log('Found room:', room);
 
       // Check if user is already a member
       const { data: existingMember, error: memberCheckError } = await supabase
@@ -63,7 +76,10 @@ const JoinTeam = () => {
           },
         ]);
 
-      if (memberError) throw memberError;
+      if (memberError) {
+        console.error('Member error:', memberError);
+        throw memberError;
+      }
 
       toast.success('Successfully joined the team!');
       navigate(`/room?id=${room.id}`);

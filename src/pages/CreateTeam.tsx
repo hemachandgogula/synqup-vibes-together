@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,15 +19,22 @@ const CreateTeam = () => {
   const [mediaType, setMediaType] = useState('video');
   const [loading, setLoading] = useState(false);
 
-  if (!user) {
-    navigate('/login');
-    return null;
-  }
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       toast.error('Please enter a team name');
+      return;
+    }
+
+    if (!user) {
+      toast.error('You must be logged in to create a team');
+      navigate('/login');
       return;
     }
 
@@ -50,13 +57,12 @@ const CreateTeam = () => {
 
       if (error) throw error;
 
-      // This will automatically add the user as a member via database trigger
-      
+      console.log('Room created:', room);
       toast.success('Team created successfully!');
       navigate(`/room?id=${room.id}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating team:', error);
-      toast.error('Failed to create team');
+      toast.error(error.message || 'Failed to create team');
     } finally {
       setLoading(false);
     }

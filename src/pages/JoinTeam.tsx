@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
+import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -35,14 +36,30 @@ const JoinTeam = () => {
         .eq('room_code', code.trim())
         .single();
 
-      if (roomError) throw roomError;
+      if (roomError) throw new Error('Invalid team code');
 
+      // Check if user is already a member
+      const { data: existingMember, error: memberCheckError } = await supabase
+        .from('room_members')
+        .select('id')
+        .eq('room_id', room.id)
+        .eq('user_id', user.id)
+        .single();
+        
+      if (existingMember) {
+        toast.info("You're already a member of this team");
+        navigate(`/room?id=${room.id}`);
+        return;
+      }
+
+      // Add user as a member
       const { error: memberError } = await supabase
         .from('room_members')
         .insert([
           {
             room_id: room.id,
             user_id: user.id,
+            role: 'member',
           },
         ]);
 
@@ -50,9 +67,9 @@ const JoinTeam = () => {
 
       toast.success('Successfully joined the team!');
       navigate(`/room?id=${room.id}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error joining team:', error);
-      toast.error('Invalid team code or you\'re already a member');
+      toast.error(error.message || 'Invalid team code or error joining team');
     } finally {
       setLoading(false);
     }
@@ -61,6 +78,17 @@ const JoinTeam = () => {
   return (
     <div className="min-h-screen bg-background p-8">
       <div className="max-w-md mx-auto">
+        <div className="mb-6">
+          <Button 
+            variant="ghost" 
+            onClick={() => navigate('/dashboard')}
+            className="gap-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back to Dashboard</span>
+          </Button>
+        </div>
+        
         <Card className="p-6">
           <h1 className="text-2xl font-bold mb-6">Join a Team</h1>
           

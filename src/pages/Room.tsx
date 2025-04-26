@@ -3,8 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import { Play, Pause, SkipBack, SkipForward, Send, User, Users, LogOut } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Play, Pause, SkipBack, SkipForward, Send, User, Users, LogOut, ArrowLeft } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -15,6 +15,9 @@ const Room = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const roomId = searchParams.get('id') || '00000000-0000-0000-0000-000000000000';
   
   useEffect(() => {
     if (!user) {
@@ -40,17 +43,19 @@ const Room = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [navigate, user]);
+  }, [navigate, user, roomId]);
   
   const fetchMessages = async () => {
     try {
       const { data, error } = await supabase
         .from('messages')
         .select('*, profiles(username, avatar_url)')
+        .eq('room_id', roomId)
         .order('created_at', { ascending: true })
         .limit(50);
         
       if (error) throw error;
+      console.log('Fetched messages:', data);
       setMessages(data || []);
     } catch (error) {
       console.error('Error fetching messages:', error);
@@ -71,15 +76,15 @@ const Room = () => {
           {
             content: message.trim(),
             user_id: user.id,
-            room_id: '00000000-0000-0000-0000-000000000000' // Default room ID for now
+            room_id: roomId
           }
         ]);
       
       if (error) throw error;
       setMessage('');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error sending message:', error);
-      toast.error('Failed to send message');
+      toast.error(`Failed to send message: ${error.message}`);
     }
   };
 
@@ -105,6 +110,15 @@ const Room = () => {
       {/* Room header */}
       <div className="border-b px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
+          <Button 
+            size="sm" 
+            variant="ghost" 
+            onClick={() => navigate('/dashboard')} 
+            className="gap-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back to Dashboard</span>
+          </Button>
           <div className="h-8 w-8 rounded-full bg-gradient-to-br from-synqup-purple to-synqup-dark-purple" />
           <h1 className="text-xl font-bold">Movie Night Room</h1>
         </div>

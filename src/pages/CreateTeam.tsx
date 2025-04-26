@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Card } from '@/components/ui/card';
+import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -14,6 +15,7 @@ const CreateTeam = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [mediaType, setMediaType] = useState('video');
   const [loading, setLoading] = useState(false);
 
@@ -31,13 +33,16 @@ const CreateTeam = () => {
 
     setLoading(true);
     try {
+      const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      
       const { data: room, error } = await supabase
         .from('rooms')
         .insert([
           {
             name: name.trim(),
+            description: description.trim() || null,
             created_by: user.id,
-            room_code: Math.random().toString(36).substring(2, 8).toUpperCase(),
+            room_code: roomCode,
           },
         ])
         .select()
@@ -45,6 +50,8 @@ const CreateTeam = () => {
 
       if (error) throw error;
 
+      // This will automatically add the user as a member via database trigger
+      
       toast.success('Team created successfully!');
       navigate(`/room?id=${room.id}`);
     } catch (error) {
@@ -58,6 +65,17 @@ const CreateTeam = () => {
   return (
     <div className="min-h-screen bg-background p-8">
       <div className="max-w-md mx-auto">
+        <div className="mb-6">
+          <Button 
+            variant="ghost" 
+            onClick={() => navigate('/dashboard')}
+            className="gap-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back to Dashboard</span>
+          </Button>
+        </div>
+        
         <Card className="p-6">
           <h1 className="text-2xl font-bold mb-6">Create a New Team</h1>
           
@@ -70,6 +88,16 @@ const CreateTeam = () => {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Enter team name"
                 required
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="description">Description (Optional)</Label>
+              <Input
+                id="description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Enter team description"
               />
             </div>
 

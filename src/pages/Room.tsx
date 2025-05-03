@@ -1,218 +1,348 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Separator } from '@/components/ui/separator';
-import { Play, Pause, SkipBack, SkipForward, Send, User, Users, LogOut, ArrowLeft } from 'lucide-react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { ArrowLeft, Send } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
+interface Message {
+  id: string;
+  content: string;
+  created_at: string;
+  user_id: string;
+  user_email?: string;
+}
+
+interface RoomDetails {
+  id: string;
+  name: string;
+  description: string | null;
+  created_by: string;
+}
+
 const Room = () => {
-  const [playing, setPlaying] = useState(false);
-  const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState<any[]>([]);
-  const { user, signOut } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const searchParams = new URLSearchParams(location.search);
-  const roomId = searchParams.get('id') || '00000000-0000-0000-0000-000000000000';
-  
+  const [searchParams] = useSearchParams();
+  const roomId = searchParams.get('id');
+  const [room, setRoom] = useState<RoomDetails | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch room details
   useEffect(() => {
-    if (!user) {
-      navigate('/login');
+    if (!user || !roomId) {
+      if (!user) navigate('/login');
+      else navigate('/dashboard');
       return;
     }
-    
-    // Subscribe to new messages
+
+    const fetchRoomDetails = async () => {
+      try {
+        setLoading(true);
+        const { data: roomData, error: roomError } = await supabase
+          .from('rooms')
+          .select('*')
+          .eq('id', roomId)
+          .single();
+
+        if (roomError) {
+          console.error('Error fetching room:', roomError);
+          toast.error('Could not find room');
+          navigate('/dashboard');
+          return;
+        }
+
+        setRoom(roomData);
+
+        // Check if the user is a member of this room
+        const { data: memberData, error: memberError } = await supabase
+          .from('room_members')
+          .select('*')
+          .eq('room_id', roomId)
+          .eq('user_id', user.id)
+          .single();
+
+        if (memberError) {
+          console.error('Error checking membership:', memberError);
+          toast.error('You are not a member of this room');
+          navigate('/dashboard');
+          return;
+        }
+
+        // Fetch messages
+        await fetchMessages();
+      } catch (error) {
+        console.error('Error:', error);
+        toast.error('An error occurred');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchRoomDetails();
+  }, [user, roomId, navigate]);
+
+  // Set up real-time subscription for messages
+  useEffect(() => {
+    if (!roomId) return;
+
     const channel = supabase
-      .channel('room-messages')
-      .on('postgres_changes', 
-        { event: 'INSERT', schema: 'public', table: 'messages' }, 
-        (payload) => {
-          console.log('New message received:', payload);
-          setMessages(prev => [...prev, payload.new]);
+      .channel(`room-${roomId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `room_id=eq.${roomId}`,
+        },
+        async (payload) => {
+          const newMessage = payload.new as Message;
+          
+          // Get user email
+          const { data } = await supabase
+            .from('profiles')
+            .select('username')
+            .eq('id', newMessage.user_id)
+            .single();
+            
+          setMessages((prev) => [
+            ...prev,
+            { ...newMessage, user_email: data?.username || newMessage.user_id },
+          ]);
         }
       )
       .subscribe();
-      
-    // Fetch existing messages
-    fetchMessages();
-    
+
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [navigate, user, roomId]);
-  
+  }, [roomId]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   const fetchMessages = async () => {
+    if (!roomId) return;
+
     try {
       const { data, error } = await supabase
         .from('messages')
-        .select('*, profiles(username, avatar_url)')
+        .select(`
+          id,
+          content,
+          created_at,
+          user_id,
+          profiles:user_id (username)
+        `)
         .eq('room_id', roomId)
-        .order('created_at', { ascending: true })
-        .limit(50);
-        
-      if (error) throw error;
-      console.log('Fetched messages:', data);
-      setMessages(data || []);
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching messages:', error);
+        return;
+      }
+
+      // Transform data to include user_email
+      const formattedMessages = data.map((msg: any) => ({
+        id: msg.id,
+        content: msg.content,
+        created_at: msg.created_at,
+        user_id: msg.user_id,
+        user_email: msg.profiles?.username || msg.user_id,
+      }));
+
+      setMessages(formattedMessages);
     } catch (error) {
-      console.error('Error fetching messages:', error);
+      console.error('Error:', error);
     }
   };
-  
-  const togglePlayPause = () => {
-    setPlaying(!playing);
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !user || !roomId) return;
+
+    setSendingMessage(true);
+    try {
+      const { error } = await supabase.from('messages').insert([
+        {
+          room_id: roomId,
+          user_id: user.id,
+          content: newMessage.trim(),
+        },
+      ]);
+
+      if (error) {
+        console.error('Error sending message:', error);
+        toast.error('Failed to send message');
+        return;
+      }
+
+      setNewMessage('');
+    } catch (error) {
+      console.error('Error:', error);
+      toast.error('An error occurred');
+    } finally {
+      setSendingMessage(false);
+    }
   };
 
-  const sendMessage = async () => {
-    if (!message.trim() || !user) return;
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Function to get YouTube embed URL
+  const getYoutubeEmbedUrl = (url: string) => {
+    try {
+      const urlObj = new URL(url);
+      if (urlObj.hostname.includes('youtube.com')) {
+        const videoId = urlObj.searchParams.get('v');
+        if (videoId) return `https://www.youtube.com/embed/${videoId}`;
+      } else if (urlObj.hostname.includes('youtu.be')) {
+        const videoId = urlObj.pathname.substring(1);
+        if (videoId) return `https://www.youtube.com/embed/${videoId}`;
+      }
+    } catch (e) {
+      return '';
+    }
+    return '';
+  };
+
+  const handleYoutubeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!youtubeUrl.trim()) return;
     
-    try {
-      const { error } = await supabase
-        .from('messages')
-        .insert([
-          {
-            content: message.trim(),
-            user_id: user.id,
-            room_id: roomId
-          }
-        ]);
-      
-      if (error) throw error;
-      setMessage('');
-    } catch (error: any) {
-      console.error('Error sending message:', error);
-      toast.error(`Failed to send message: ${error.message}`);
+    const embedUrl = getYoutubeEmbedUrl(youtubeUrl);
+    if (!embedUrl) {
+      toast.error('Invalid YouTube URL');
+      return;
     }
+    
+    setYoutubeUrl(embedUrl);
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      sendMessage();
-    }
-  };
-  
-  const handleLogout = async () => {
-    try {
-      await signOut();
-      toast.success('Logged out successfully');
-      navigate('/login');
-    } catch (error) {
-      console.error('Error logging out:', error);
-      toast.error('Failed to log out');
-    }
-  };
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background p-8">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center">Loading room...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="h-screen flex flex-col bg-background">
-      {/* Room header */}
-      <div className="border-b px-4 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+    <div className="min-h-screen bg-background p-4 md:p-8">
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-6 flex justify-between items-center">
           <Button 
-            size="sm" 
             variant="ghost" 
-            onClick={() => navigate('/dashboard')} 
+            onClick={() => navigate('/dashboard')}
             className="gap-2"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Back to Dashboard</span>
           </Button>
-          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-synqup-purple to-synqup-dark-purple" />
-          <h1 className="text-xl font-bold">Movie Night Room</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="ghost" className="gap-2">
-            <Users className="h-4 w-4" />
-            <span>3 People</span>
-          </Button>
-          <Button size="sm" className="bg-synqup-purple hover:bg-synqup-dark-purple text-white gap-2">
-            <User className="h-4 w-4" />
-            <span>Invite</span>
-          </Button>
-          <Button 
-            size="sm" 
-            variant="destructive" 
-            onClick={handleLogout}
-            className="gap-2"
-          >
-            <LogOut className="h-4 w-4" />
-            <span>Logout</span>
-          </Button>
-        </div>
-      </div>
-      
-      {/* Main content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Media player */}
-        <div className="flex-1 flex flex-col">
-          <div className="flex-1 bg-gray-900 flex items-center justify-center">
-            <div className="text-white text-center">
-              <div className="text-4xl font-bold mb-4">Media Player</div>
-              <p className="text-gray-400">Currently showing a placeholder for the actual media player</p>
-            </div>
-          </div>
-          
-          {/* Media controls */}
-          <div className="p-4 border-t flex items-center justify-between bg-card">
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost">
-                <SkipBack className="h-5 w-5" />
-              </Button>
-              <Button size="lg" className="bg-synqup-purple hover:bg-synqup-dark-purple text-white h-12 w-12 rounded-full p-0" onClick={togglePlayPause}>
-                {playing ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6" />}
-              </Button>
-              <Button size="sm" variant="ghost">
-                <SkipForward className="h-5 w-5" />
-              </Button>
-            </div>
-            <div className="text-sm font-medium">
-              00:14:35 / 02:23:15
-            </div>
-          </div>
-        </div>
+
+        <h1 className="text-3xl font-bold mb-8">{room?.name}</h1>
         
-        {/* Chat sidebar */}
-        <div className="w-80 border-l flex flex-col">
-          <div className="p-4 border-b">
-            <h2 className="font-semibold">Live Chat</h2>
-          </div>
-          
-          {/* Chat messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.length > 0 ? (
-              messages.map((msg, index) => (
-                <div key={msg.id || index} className="flex gap-2">
-                  <div className="h-8 w-8 rounded-full bg-synqup-soft-purple flex items-center justify-center font-semibold text-synqup-dark-purple">
-                    {msg.profiles?.username?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U'}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Media Player Section */}
+          <div className="lg:col-span-2">
+            <Card className="p-4 mb-4">
+              <h2 className="text-xl font-semibold mb-4">Media Player</h2>
+              
+              <form onSubmit={handleYoutubeSubmit} className="flex gap-2 mb-4">
+                <Input
+                  value={youtubeUrl}
+                  onChange={(e) => setYoutubeUrl(e.target.value)}
+                  placeholder="Enter YouTube URL"
+                  className="flex-1"
+                />
+                <Button type="submit">
+                  Play
+                </Button>
+              </form>
+              
+              <div className="aspect-video bg-black relative rounded-md overflow-hidden">
+                {youtubeUrl ? (
+                  <iframe
+                    src={youtubeUrl}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                    className="absolute top-0 left-0 w-full h-full"
+                  ></iframe>
+                ) : (
+                  <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center text-gray-400">
+                    Enter a YouTube URL to watch together
                   </div>
-                  <div>
-                    <div className="font-medium text-sm">{msg.profiles?.username || 'User'}</div>
-                    <div className="bg-muted p-2 rounded-lg text-sm">{msg.content}</div>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center text-muted-foreground py-8">
-                No messages yet. Start the conversation!
+                )}
               </div>
-            )}
+            </Card>
           </div>
           
-          {/* Chat input */}
-          <div className="p-4 border-t">
-            <div className="flex gap-2">
-              <Input 
-                placeholder="Type a message..." 
-                value={message} 
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
-              />
-              <Button size="icon" className="bg-synqup-purple hover:bg-synqup-dark-purple text-white" onClick={sendMessage}>
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
+          {/* Chat Section */}
+          <div className="lg:col-span-1">
+            <Card className="p-4 h-[600px] flex flex-col">
+              <h2 className="text-xl font-semibold mb-4">Chat</h2>
+              
+              <div className="flex-1 overflow-auto mb-4">
+                <div className="space-y-4">
+                  {messages.length === 0 ? (
+                    <div className="text-center text-gray-400 py-4">
+                      No messages yet
+                    </div>
+                  ) : (
+                    messages.map((message) => (
+                      <div
+                        key={message.id}
+                        className={`p-3 rounded-lg max-w-[80%] ${
+                          message.user_id === user?.id
+                            ? 'ml-auto bg-synqup-purple text-white'
+                            : 'bg-gray-100 dark:bg-gray-800'
+                        }`}
+                      >
+                        <div className="text-xs opacity-70 mb-1">
+                          {message.user_id === user?.id
+                            ? 'You'
+                            : message.user_email || 'User'}
+                          {' · '}
+                          {formatTime(message.created_at)}
+                        </div>
+                        <div>{message.content}</div>
+                      </div>
+                    ))
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+              
+              <form onSubmit={handleSendMessage} className="flex gap-2">
+                <Input
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  placeholder="Type a message..."
+                  disabled={sendingMessage}
+                  className="flex-1"
+                />
+                <Button type="submit" disabled={sendingMessage} size="icon">
+                  <Send className="h-4 w-4" />
+                </Button>
+              </form>
+            </Card>
           </div>
         </div>
       </div>

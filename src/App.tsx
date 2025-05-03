@@ -14,6 +14,14 @@ import CreateTeam from "./pages/CreateTeam";
 import JoinTeam from "./pages/JoinTeam";
 import NotFound from "./pages/NotFound";
 import { useAuth } from "./contexts/AuthContext";
+import Features from "./pages/Features";
+import Pricing from "./pages/Pricing";
+import About from "./pages/About";
+import HelpCenter from "./pages/HelpCenter";
+import Guides from "./pages/Guides";
+import API from "./pages/API";
+import Blog from "./pages/Blog";
+import Careers from "./pages/Careers";
 
 const queryClient = new QueryClient();
 
@@ -95,6 +103,16 @@ const AppRoutes = () => {
           </ProtectedRoute>
         } 
       />
+      {/* New static pages */}
+      <Route path="/features" element={<Features />} />
+      <Route path="/pricing" element={<Pricing />} />
+      <Route path="/integrations" element={<Features />} />
+      <Route path="/help-center" element={<HelpCenter />} />
+      <Route path="/guides" element={<Guides />} />
+      <Route path="/api" element={<API />} />
+      <Route path="/about" element={<About />} />
+      <Route path="/blog" element={<Blog />} />
+      <Route path="/careers" element={<Careers />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

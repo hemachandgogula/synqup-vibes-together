@@ -69,13 +69,27 @@ const Room = () => {
           .select('*')
           .eq('room_id', roomId)
           .eq('user_id', user.id)
-          .single();
+          .maybeSingle();
 
-        if (memberError) {
-          console.error('Error checking membership:', memberError);
-          toast.error('You are not a member of this room');
-          navigate('/dashboard');
-          return;
+        if (memberError || !memberData) {
+          console.error('Error checking membership:', memberError || 'Not a member');
+          
+          // If not a member, try to add them
+          const { error: joinError } = await supabase
+            .from('room_members')
+            .insert([{ 
+              room_id: roomId, 
+              user_id: user.id,
+              role: 'member'
+            }]);
+            
+          if (joinError) {
+            toast.error('You are not a member of this room and could not join');
+            navigate('/dashboard');
+            return;
+          } else {
+            toast.success('You have joined the room');
+          }
         }
 
         // Fetch messages
@@ -137,6 +151,7 @@ const Room = () => {
     if (!roomId) return;
 
     try {
+      console.log('Fetching messages for room:', roomId);
       const { data, error } = await supabase
         .from('messages')
         .select(`
@@ -153,6 +168,8 @@ const Room = () => {
         console.error('Error fetching messages:', error);
         return;
       }
+
+      console.log('Messages fetched:', data);
 
       // Transform data to include user_email
       const formattedMessages = data.map((msg: any) => ({
@@ -175,13 +192,19 @@ const Room = () => {
 
     setSendingMessage(true);
     try {
-      const { error } = await supabase.from('messages').insert([
+      console.log('Sending message:', {
+        room_id: roomId,
+        user_id: user.id,
+        content: newMessage.trim()
+      });
+      
+      const { data, error } = await supabase.from('messages').insert([
         {
           room_id: roomId,
           user_id: user.id,
           content: newMessage.trim(),
         },
-      ]);
+      ]).select();
 
       if (error) {
         console.error('Error sending message:', error);
@@ -189,6 +212,7 @@ const Room = () => {
         return;
       }
 
+      console.log('Message sent successfully:', data);
       setNewMessage('');
     } catch (error) {
       console.error('Error:', error);

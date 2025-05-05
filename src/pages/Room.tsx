@@ -4,10 +4,12 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Send, Share2, Check } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import { ArrowLeft, Send, Share2, Check, Users } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import RoomMembers from '@/components/RoomMembers';
 
 interface Message {
   id: string;
@@ -46,6 +48,7 @@ const Room = () => {
   const [isOwner, setIsOwner] = useState(false);
   const [currentMediaSession, setCurrentMediaSession] = useState<MediaSession | null>(null);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<any>(null);
 
@@ -147,6 +150,7 @@ const Room = () => {
       supabase.removeChannel(channelRef.current);
     }
 
+    // Create and subscribe to the channel
     const channel = supabase
       .channel(`room-${roomId}`)
       .on(
@@ -159,19 +163,21 @@ const Room = () => {
         },
         async (payload) => {
           console.log('New message received:', payload);
-          const newMessage = payload.new as Message;
-          
-          // Get user email
-          const { data } = await supabase
-            .from('profiles')
-            .select('username')
-            .eq('id', newMessage.user_id)
-            .single();
+          if (payload.new && typeof payload.new === 'object') {
+            const newMessage = payload.new as Message;
             
-          setMessages((prev) => [
-            ...prev,
-            { ...newMessage, user_email: data?.username || newMessage.user_id },
-          ]);
+            // Get user email
+            const { data } = await supabase
+              .from('profiles')
+              .select('username')
+              .eq('id', newMessage.user_id)
+              .single();
+              
+            setMessages((prev) => [
+              ...prev,
+              { ...newMessage, user_email: data?.username || newMessage.user_id },
+            ]);
+          }
         }
       )
       .on(
@@ -186,7 +192,9 @@ const Room = () => {
           console.log('Media session update:', payload);
           if (payload.new && typeof payload.new === 'object' && 'media_url' in payload.new) {
             setCurrentMediaSession(payload.new as MediaSession);
-            setYoutubeUrl(payload.new.media_url as string);
+            if ('media_url' in payload.new) {
+              setYoutubeUrl(payload.new.media_url as string);
+            }
           }
         }
       )
@@ -202,7 +210,9 @@ const Room = () => {
 
     return () => {
       console.log('Cleaning up real-time subscription');
-      supabase.removeChannel(channel);
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
     };
   }, [roomId, user]);
 
@@ -382,6 +392,10 @@ const Room = () => {
     }
   };
 
+  const toggleMembersList = () => {
+    setShowMembers(!showMembers);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background p-8">
@@ -405,22 +419,35 @@ const Room = () => {
             <span>Back to Dashboard</span>
           </Button>
           
-          {room?.room_code && (
-            <Button 
-              variant="outline"
-              onClick={handleShare}
-              className="gap-2"
-            >
-              {roomCodeCopied ? (
-                <Check className="h-4 w-4 text-green-500" />
-              ) : (
-                <Share2 className="h-4 w-4" />
-              )}
-              <span className="hidden sm:inline">
-                {roomCodeCopied ? 'Copied!' : 'Share Room'}
-              </span>
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {isOwner && (
+              <Button 
+                variant="outline"
+                onClick={toggleMembersList}
+                className="gap-2"
+              >
+                <Users className="h-4 w-4" />
+                <span className="hidden sm:inline">Members</span>
+              </Button>
+            )}
+            
+            {room?.room_code && (
+              <Button 
+                variant="outline"
+                onClick={handleShare}
+                className="gap-2"
+              >
+                {roomCodeCopied ? (
+                  <Check className="h-4 w-4 text-green-500" />
+                ) : (
+                  <Share2 className="h-4 w-4" />
+                )}
+                <span className="hidden sm:inline">
+                  {roomCodeCopied ? 'Copied!' : 'Share Room'}
+                </span>
+              </Button>
+            )}
+          </div>
         </div>
 
         <h1 className="text-3xl font-bold mb-8">{room?.name}</h1>
@@ -467,6 +494,14 @@ const Room = () => {
                 )}
               </div>
             </Card>
+            
+            {showMembers && isOwner && (
+              <RoomMembers 
+                roomId={roomId || ''} 
+                currentUserId={user?.id || ''} 
+                isOwner={isOwner} 
+              />
+            )}
           </div>
           
           {/* Chat Section */}
@@ -506,14 +541,20 @@ const Room = () => {
               </div>
               
               <form onSubmit={handleSendMessage} className="flex gap-2">
-                <Input
+                <Textarea
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
                   placeholder="Type a message..."
                   disabled={sendingMessage}
-                  className="flex-1"
+                  className="flex-1 min-h-[60px] resize-none"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage(e);
+                    }
+                  }}
                 />
-                <Button type="submit" disabled={sendingMessage} size="icon">
+                <Button type="submit" disabled={sendingMessage} size="icon" className="h-[60px]">
                   <Send className="h-4 w-4" />
                 </Button>
               </form>

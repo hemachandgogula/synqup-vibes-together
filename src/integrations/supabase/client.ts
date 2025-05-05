@@ -9,12 +9,13 @@ const SUPABASE_PUBLISHABLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
+// Initialize the Supabase client with better persistence configuration
 export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
-    storage: localStorage
+    storage: typeof window !== 'undefined' ? localStorage : undefined
   },
   realtime: {
     params: {
@@ -22,3 +23,6 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABL
     }
   }
 });
+
+// Set up the Supabase realtime client
+supabase.realtime.setAuth(SUPABASE_PUBLISHABLE_KEY);

@@ -51,6 +51,7 @@ const Room = () => {
   const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<any>(null);
+  const lastMessageSentRef = useRef<string | null>(null);
 
   // Check if user is logged in
   useEffect(() => {
@@ -166,17 +167,20 @@ const Room = () => {
           if (payload.new && typeof payload.new === 'object') {
             const newMessage = payload.new as Message;
             
-            // Get user email
-            const { data } = await supabase
-              .from('profiles')
-              .select('username')
-              .eq('id', newMessage.user_id)
-              .single();
-              
-            setMessages((prev) => [
-              ...prev,
-              { ...newMessage, user_email: data?.username || newMessage.user_id },
-            ]);
+            // Only process messages that aren't from the current user or weren't just sent by us
+            if (newMessage.user_id !== user.id || lastMessageSentRef.current !== newMessage.id) {
+              // Get user email
+              const { data } = await supabase
+                .from('profiles')
+                .select('username')
+                .eq('id', newMessage.user_id)
+                .single();
+                
+              setMessages((prev) => [
+                ...prev,
+                { ...newMessage, user_email: data?.username || newMessage.user_id },
+              ]);
+            }
           }
         }
       )
@@ -190,10 +194,22 @@ const Room = () => {
         },
         (payload) => {
           console.log('Media session update:', payload);
-          if (payload.new && typeof payload.new === 'object' && 'media_url' in payload.new) {
-            setCurrentMediaSession(payload.new as MediaSession);
+          if (payload.new && typeof payload.new === 'object') {
+            // Ensure payload has the expected properties
             if ('media_url' in payload.new) {
-              setYoutubeUrl(payload.new.media_url as string);
+              // Apply the update only if it's from another user (owner)
+              if (!isOwner) {
+                setCurrentMediaSession(payload.new as MediaSession);
+                setYoutubeUrl(payload.new.media_url as string);
+                
+                // Force iframe refresh by updating its src
+                const iframe = document.querySelector('iframe');
+                if (iframe) {
+                  iframe.src = payload.new.media_url as string;
+                }
+                
+                toast.success("Media updated by room owner");
+              }
             }
           }
         }
@@ -214,7 +230,7 @@ const Room = () => {
         supabase.removeChannel(channelRef.current);
       }
     };
-  }, [roomId, user]);
+  }, [roomId, user, isOwner]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -296,13 +312,13 @@ const Room = () => {
         content: newMessage.trim()
       });
       
-      const { error } = await supabase.from('messages').insert([
+      const { data, error } = await supabase.from('messages').insert([
         {
           room_id: roomId,
           user_id: user.id,
           content: newMessage.trim(),
         },
-      ]);
+      ]).select('id').single();
 
       if (error) {
         console.error('Error sending message:', error);
@@ -310,7 +326,26 @@ const Room = () => {
         return;
       }
 
-      console.log('Message sent successfully');
+      console.log('Message sent successfully with ID:', data?.id);
+      
+      // Store the ID of the message we just sent to prevent duplication
+      if (data?.id) {
+        lastMessageSentRef.current = data.id;
+      }
+      
+      // Add our own message to the messages list
+      setMessages((prev) => [
+        ...prev, 
+        { 
+          id: data?.id || 'temp-id', 
+          content: newMessage.trim(), 
+          created_at: new Date().toISOString(),
+          user_id: user.id,
+          user_email: 'You'
+        }
+      ]);
+      
+      // Clear the input
       setNewMessage('');
     } catch (error) {
       console.error('Error:', error);
@@ -349,6 +384,14 @@ const Room = () => {
       } else {
         toast.success('Media updated for all viewers');
         console.log('Media session updated successfully with URL:', embedUrl);
+        
+        // Update local state for owner as well
+        setCurrentMediaSession({
+          id: '',
+          media_url: embedUrl,
+          is_playing: true,
+          current_position: 0
+        });
       }
     } catch (error) {
       console.error('Error:', error);

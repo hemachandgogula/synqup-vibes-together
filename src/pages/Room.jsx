@@ -11,47 +11,24 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import RoomMembers from '@/components/RoomMembers';
 
-interface Message {
-  id: string;
-  content: string;
-  created_at: string;
-  user_id: string;
-  user_email?: string;
-}
-
-interface RoomDetails {
-  id: string;
-  name: string;
-  description: string | null;
-  created_by: string;
-  room_code: string | null;
-}
-
-interface MediaSession {
-  id: string;
-  media_url: string;
-  is_playing: boolean;
-  current_position: number;
-}
-
 const Room = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const roomId = searchParams.get('id');
-  const [room, setRoom] = useState<RoomDetails | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [room, setRoom] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isOwner, setIsOwner] = useState(false);
-  const [currentMediaSession, setCurrentMediaSession] = useState<MediaSession | null>(null);
+  const [currentMediaSession, setCurrentMediaSession] = useState(null);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const channelRef = useRef<any>(null);
-  const lastMessageSentRef = useRef<string | null>(null);
+  const messagesEndRef = useRef(null);
+  const channelRef = useRef(null);
+  const lastMessageSentRef = useRef(null);
 
   // Check if user is logged in
   useEffect(() => {
@@ -165,7 +142,7 @@ const Room = () => {
         async (payload) => {
           console.log('New message received:', payload);
           if (payload.new && typeof payload.new === 'object') {
-            const newMessage = payload.new as Message;
+            const newMessage = payload.new;
             
             // Only process messages that aren't from the current user or weren't just sent by us
             if (newMessage.user_id !== user.id || lastMessageSentRef.current !== newMessage.id) {
@@ -199,13 +176,13 @@ const Room = () => {
             if ('media_url' in payload.new) {
               // Apply the update only if it's from another user (owner)
               if (!isOwner) {
-                setCurrentMediaSession(payload.new as MediaSession);
-                setYoutubeUrl(payload.new.media_url as string);
+                setCurrentMediaSession(payload.new);
+                setYoutubeUrl(payload.new.media_url);
                 
                 // Force iframe refresh by updating its src
                 const iframe = document.querySelector('iframe');
                 if (iframe) {
-                  iframe.src = payload.new.media_url as string;
+                  iframe.src = payload.new.media_url;
                 }
                 
                 toast.success("Media updated by room owner");
@@ -285,7 +262,7 @@ const Room = () => {
       console.log('Messages fetched:', data);
 
       // Transform data to include user_email
-      const formattedMessages = data.map((msg: any) => ({
+      const formattedMessages = data.map((msg) => ({
         id: msg.id,
         content: msg.content,
         created_at: msg.created_at,
@@ -300,7 +277,7 @@ const Room = () => {
     }
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !user || !roomId) return;
 
@@ -355,7 +332,7 @@ const Room = () => {
     }
   };
 
-  const handleYoutubeSubmit = async (e: React.FormEvent) => {
+  const handleYoutubeSubmit = async (e) => {
     e.preventDefault();
     if (!youtubeUrl.trim() || !isOwner || !roomId) return;
     
@@ -399,13 +376,13 @@ const Room = () => {
     }
   };
 
-  const formatTime = (dateString: string) => {
+  const formatTime = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   // Function to get YouTube embed URL
-  const getYoutubeEmbedUrl = (url: string) => {
+  const getYoutubeEmbedUrl = (url) => {
     try {
       const urlObj = new URL(url);
       if (urlObj.hostname.includes('youtube.com')) {

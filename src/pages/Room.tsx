@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Send } from 'lucide-react';
+import { ArrowLeft, Send, Share2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -22,6 +22,14 @@ interface RoomDetails {
   name: string;
   description: string | null;
   created_by: string;
+  room_code: string | null;
+}
+
+interface MediaSession {
+  id: string;
+  media_url: string;
+  is_playing: boolean;
+  current_position: number;
 }
 
 const Room = () => {
@@ -35,6 +43,8 @@ const Room = () => {
   const [loading, setLoading] = useState(true);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [isOwner, setIsOwner] = useState(false);
+  const [currentMediaSession, setCurrentMediaSession] = useState<MediaSession | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Fetch room details
@@ -90,7 +100,15 @@ const Room = () => {
           } else {
             toast.success('You have joined the room');
           }
+        } else {
+          // Check if user is owner
+          if (memberData.role === 'owner' || roomData.created_by === user.id) {
+            setIsOwner(true);
+          }
         }
+
+        // Fetch current media session
+        fetchCurrentMediaSession();
 
         // Fetch messages
         await fetchMessages();
@@ -135,17 +153,56 @@ const Room = () => {
           ]);
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'media_sessions',
+          filter: `room_id=eq.${roomId}`,
+        },
+        (payload) => {
+          console.log('Media session update:', payload);
+          if (payload.new) {
+            setCurrentMediaSession(payload.new as MediaSession);
+            if (payload.new.media_url !== youtubeUrl) {
+              setYoutubeUrl(payload.new.media_url);
+            }
+          }
+        }
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [roomId]);
+  }, [roomId, youtubeUrl]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const fetchCurrentMediaSession = async () => {
+    if (!roomId) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('media_sessions')
+        .select('*')
+        .eq('room_id', roomId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+        
+      if (data) {
+        setCurrentMediaSession(data);
+        setYoutubeUrl(data.media_url);
+      }
+    } catch (error) {
+      console.error('Error fetching media session:', error);
+    }
+  };
 
   const fetchMessages = async () => {
     if (!roomId) return;
@@ -222,6 +279,41 @@ const Room = () => {
     }
   };
 
+  const handleYoutubeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!youtubeUrl.trim() || !isOwner) return;
+    
+    const embedUrl = getYoutubeEmbedUrl(youtubeUrl);
+    if (!embedUrl) {
+      toast.error('Invalid YouTube URL');
+      return;
+    }
+    
+    try {
+      // Create or update media session
+      const { error } = await supabase
+        .from('media_sessions')
+        .upsert({
+          room_id: roomId,
+          media_url: embedUrl,
+          media_type: 'youtube',
+          is_playing: true,
+          current_position: 0,
+          media_title: youtubeUrl.split('v=')[1] || 'YouTube Video'
+        });
+        
+      if (error) {
+        console.error('Error updating media session:', error);
+        toast.error('Failed to update media');
+      } else {
+        toast.success('Media updated for all viewers');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      toast.error('An error occurred');
+    }
+  };
+
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -244,17 +336,14 @@ const Room = () => {
     return '';
   };
 
-  const handleYoutubeSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!youtubeUrl.trim()) return;
-    
-    const embedUrl = getYoutubeEmbedUrl(youtubeUrl);
-    if (!embedUrl) {
-      toast.error('Invalid YouTube URL');
-      return;
+  const handleShare = () => {
+    if (room?.room_code) {
+      navigator.clipboard.writeText(room.room_code)
+        .then(() => toast.success('Room code copied to clipboard!'))
+        .catch(() => toast.error('Failed to copy room code'));
+    } else {
+      toast.error('No room code available');
     }
-    
-    setYoutubeUrl(embedUrl);
   };
 
   if (loading) {
@@ -279,6 +368,17 @@ const Room = () => {
             <ArrowLeft className="h-4 w-4" />
             <span>Back to Dashboard</span>
           </Button>
+          
+          {room?.room_code && (
+            <Button 
+              variant="outline"
+              onClick={handleShare}
+              className="gap-2"
+            >
+              <Share2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Share Room</span>
+            </Button>
+          )}
         </div>
 
         <h1 className="text-3xl font-bold mb-8">{room?.name}</h1>
@@ -289,29 +389,37 @@ const Room = () => {
             <Card className="p-4 mb-4">
               <h2 className="text-xl font-semibold mb-4">Media Player</h2>
               
-              <form onSubmit={handleYoutubeSubmit} className="flex gap-2 mb-4">
-                <Input
-                  value={youtubeUrl}
-                  onChange={(e) => setYoutubeUrl(e.target.value)}
-                  placeholder="Enter YouTube URL"
-                  className="flex-1"
-                />
-                <Button type="submit">
-                  Play
-                </Button>
-              </form>
+              {isOwner ? (
+                <form onSubmit={handleYoutubeSubmit} className="flex gap-2 mb-4">
+                  <Input
+                    value={youtubeUrl}
+                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                    placeholder="Enter YouTube URL"
+                    className="flex-1"
+                  />
+                  <Button type="submit">
+                    Play
+                  </Button>
+                </form>
+              ) : (
+                <div className="mb-4 text-sm text-muted-foreground">
+                  Video playback is controlled by the room owner
+                </div>
+              )}
               
               <div className="aspect-video bg-black relative rounded-md overflow-hidden">
-                {youtubeUrl ? (
+                {currentMediaSession?.media_url ? (
                   <iframe
-                    src={youtubeUrl}
+                    src={currentMediaSession.media_url}
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                     allowFullScreen
                     className="absolute top-0 left-0 w-full h-full"
                   ></iframe>
                 ) : (
                   <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center text-gray-400">
-                    Enter a YouTube URL to watch together
+                    {isOwner 
+                      ? 'Enter a YouTube URL to watch together' 
+                      : 'Waiting for room owner to play a video'}
                   </div>
                 )}
               </div>

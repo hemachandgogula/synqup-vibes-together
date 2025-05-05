@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Send, Share2 } from 'lucide-react';
+import { ArrowLeft, Send, Share2, Check } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -45,6 +45,7 @@ const Room = () => {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isOwner, setIsOwner] = useState(false);
   const [currentMediaSession, setCurrentMediaSession] = useState<MediaSession | null>(null);
+  const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Fetch room details
@@ -81,9 +82,14 @@ const Room = () => {
           .eq('user_id', user.id)
           .maybeSingle();
 
-        if (memberError || !memberData) {
-          console.error('Error checking membership:', memberError || 'Not a member');
-          
+        if (memberError) {
+          console.error('Error checking membership:', memberError);
+          toast.error('Error checking room membership');
+          navigate('/dashboard');
+          return;
+        }
+
+        if (!memberData) {
           // If not a member, try to add them
           const { error: joinError } = await supabase
             .from('room_members')
@@ -94,6 +100,7 @@ const Room = () => {
             }]);
             
           if (joinError) {
+            console.error('Error joining room:', joinError);
             toast.error('You are not a member of this room and could not join');
             navigate('/dashboard');
             return;
@@ -163,7 +170,7 @@ const Room = () => {
         },
         (payload) => {
           console.log('Media session update:', payload);
-          if (payload.new) {
+          if (payload.new && 'media_url' in payload.new) {
             setCurrentMediaSession(payload.new as MediaSession);
             if (payload.new.media_url !== youtubeUrl) {
               setYoutubeUrl(payload.new.media_url);
@@ -223,6 +230,7 @@ const Room = () => {
 
       if (error) {
         console.error('Error fetching messages:', error);
+        toast.error('Failed to load messages');
         return;
       }
 
@@ -240,6 +248,7 @@ const Room = () => {
       setMessages(formattedMessages);
     } catch (error) {
       console.error('Error:', error);
+      toast.error('Failed to load messages');
     }
   };
 
@@ -273,7 +282,7 @@ const Room = () => {
       setNewMessage('');
     } catch (error) {
       console.error('Error:', error);
-      toast.error('An error occurred');
+      toast.error('Failed to send message');
     } finally {
       setSendingMessage(false);
     }
@@ -339,7 +348,11 @@ const Room = () => {
   const handleShare = () => {
     if (room?.room_code) {
       navigator.clipboard.writeText(room.room_code)
-        .then(() => toast.success('Room code copied to clipboard!'))
+        .then(() => {
+          setRoomCodeCopied(true);
+          toast.success('Room code copied to clipboard!');
+          setTimeout(() => setRoomCodeCopied(false), 2000);
+        })
         .catch(() => toast.error('Failed to copy room code'));
     } else {
       toast.error('No room code available');
@@ -375,8 +388,14 @@ const Room = () => {
               onClick={handleShare}
               className="gap-2"
             >
-              <Share2 className="h-4 w-4" />
-              <span className="hidden sm:inline">Share Room</span>
+              {roomCodeCopied ? (
+                <Check className="h-4 w-4 text-green-500" />
+              ) : (
+                <Share2 className="h-4 w-4" />
+              )}
+              <span className="hidden sm:inline">
+                {roomCodeCopied ? 'Copied!' : 'Share Room'}
+              </span>
             </Button>
           )}
         </div>

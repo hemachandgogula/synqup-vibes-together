@@ -47,6 +47,14 @@ const Room = () => {
   const [currentMediaSession, setCurrentMediaSession] = useState<MediaSession | null>(null);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const channelRef = useRef<any>(null);
+
+  // Check if user is logged in
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
+    }
+  }, [user, navigate]);
 
   // Fetch room details
   useEffect(() => {
@@ -115,7 +123,7 @@ const Room = () => {
         }
 
         // Fetch current media session
-        fetchCurrentMediaSession();
+        await fetchCurrentMediaSession();
 
         // Fetch messages
         await fetchMessages();
@@ -130,9 +138,14 @@ const Room = () => {
     fetchRoomDetails();
   }, [user, roomId, navigate]);
 
-  // Set up real-time subscription for messages
+  // Set up real-time subscription for messages and media
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !user) return;
+
+    // Clear existing channel if any
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+    }
 
     const channel = supabase
       .channel(`room-${roomId}`)
@@ -145,6 +158,7 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         async (payload) => {
+          console.log('New message received:', payload);
           const newMessage = payload.new as Message;
           
           // Get user email
@@ -170,20 +184,27 @@ const Room = () => {
         },
         (payload) => {
           console.log('Media session update:', payload);
-          if (payload.new && 'media_url' in payload.new) {
+          if (payload.new && typeof payload.new === 'object' && 'media_url' in payload.new) {
             setCurrentMediaSession(payload.new as MediaSession);
-            if (payload.new.media_url !== youtubeUrl) {
-              setYoutubeUrl(payload.new.media_url);
-            }
+            setYoutubeUrl(payload.new.media_url as string);
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Subscription status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('Successfully subscribed to room channel');
+        }
+      });
+
+    // Store channel reference for cleanup
+    channelRef.current = channel;
 
     return () => {
+      console.log('Cleaning up real-time subscription');
       supabase.removeChannel(channel);
     };
-  }, [roomId, youtubeUrl]);
+  }, [roomId, user]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -202,6 +223,7 @@ const Room = () => {
         .limit(1)
         .maybeSingle();
         
+      console.log('Current media session:', data);
       if (data) {
         setCurrentMediaSession(data);
         setYoutubeUrl(data.media_url);
@@ -264,13 +286,13 @@ const Room = () => {
         content: newMessage.trim()
       });
       
-      const { data, error } = await supabase.from('messages').insert([
+      const { error } = await supabase.from('messages').insert([
         {
           room_id: roomId,
           user_id: user.id,
           content: newMessage.trim(),
         },
-      ]).select();
+      ]);
 
       if (error) {
         console.error('Error sending message:', error);
@@ -278,7 +300,7 @@ const Room = () => {
         return;
       }
 
-      console.log('Message sent successfully:', data);
+      console.log('Message sent successfully');
       setNewMessage('');
     } catch (error) {
       console.error('Error:', error);
@@ -290,7 +312,7 @@ const Room = () => {
 
   const handleYoutubeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!youtubeUrl.trim() || !isOwner) return;
+    if (!youtubeUrl.trim() || !isOwner || !roomId) return;
     
     const embedUrl = getYoutubeEmbedUrl(youtubeUrl);
     if (!embedUrl) {
@@ -316,6 +338,7 @@ const Room = () => {
         toast.error('Failed to update media');
       } else {
         toast.success('Media updated for all viewers');
+        console.log('Media session updated successfully with URL:', embedUrl);
       }
     } catch (error) {
       console.error('Error:', error);
@@ -334,10 +357,10 @@ const Room = () => {
       const urlObj = new URL(url);
       if (urlObj.hostname.includes('youtube.com')) {
         const videoId = urlObj.searchParams.get('v');
-        if (videoId) return `https://www.youtube.com/embed/${videoId}`;
+        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1`;
       } else if (urlObj.hostname.includes('youtu.be')) {
         const videoId = urlObj.pathname.substring(1);
-        if (videoId) return `https://www.youtube.com/embed/${videoId}`;
+        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1`;
       }
     } catch (e) {
       return '';
@@ -433,6 +456,7 @@ const Room = () => {
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                     allowFullScreen
                     className="absolute top-0 left-0 w-full h-full"
+                    title="YouTube Video"
                   ></iframe>
                 ) : (
                   <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center text-gray-400">

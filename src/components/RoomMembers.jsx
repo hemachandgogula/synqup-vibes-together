@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Trash2, UserX } from 'lucide-react';
+import { UserX } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
@@ -29,7 +29,9 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }) => {
           fetchMembers();
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Room members channel status:', status);
+      });
       
     return () => {
       supabase.removeChannel(channel);
@@ -39,6 +41,7 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }) => {
   const fetchMembers = async () => {
     try {
       setLoading(true);
+      console.log('Fetching room members for room:', roomId);
       const { data, error } = await supabase
         .from('room_members')
         .select(`
@@ -60,7 +63,7 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }) => {
       console.log('Room members:', data);
       setMembers(data);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in fetchMembers:', error);
       toast.error('An error occurred loading members');
     } finally {
       setLoading(false);
@@ -71,6 +74,7 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }) => {
     if (!isOwner || userId === currentUserId) return;
     
     try {
+      console.log('Removing member with ID:', memberId);
       const { error } = await supabase
         .from('room_members')
         .delete()
@@ -85,7 +89,7 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }) => {
       toast.success('Member removed from room');
       setMembers(members.filter(m => m.id !== memberId));
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in handleRemoveMember:', error);
       toast.error('An error occurred');
     }
   };

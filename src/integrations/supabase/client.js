@@ -25,3 +25,27 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
 
 // Set up the Supabase realtime client
 supabase.realtime.setAuth(SUPABASE_PUBLISHABLE_KEY);
+
+// Enable Supabase realtime for media_sessions and messages tables
+const enableRealtimeForTable = async (tableName) => {
+  try {
+    console.log(`Enabling realtime for ${tableName} table`);
+    // Subscribe to the changes
+    await supabase
+      .channel(`public:${tableName}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: tableName }, (payload) => {
+        console.log(`Change received for ${tableName}:`, payload);
+      })
+      .subscribe();
+    console.log(`Realtime enabled for ${tableName}`);
+  } catch (error) {
+    console.error(`Error enabling realtime for ${tableName}:`, error);
+  }
+};
+
+// Enable realtime for key tables when the client initializes
+if (typeof window !== 'undefined') {
+  enableRealtimeForTable('media_sessions');
+  enableRealtimeForTable('messages');
+  enableRealtimeForTable('room_members');
+}

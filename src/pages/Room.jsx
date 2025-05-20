@@ -29,11 +29,15 @@ const Room = () => {
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
   const lastMessageSentRef = useRef(null);
+  const playerRef = useRef(null);
+  const mediaChannelRef = useRef(null);
 
   // Check if user is logged in
   useEffect(() => {
     if (!user) {
       navigate('/login');
+    } else {
+      console.log("User authenticated:", user.id);
     }
   }, [user, navigate]);
 
@@ -45,9 +49,12 @@ const Room = () => {
       return;
     }
 
+    console.log("Fetching room details for roomId:", roomId);
+    
     const fetchRoomDetails = async () => {
       try {
         setLoading(true);
+        console.log("Fetching room data...");
         const { data: roomData, error: roomError } = await supabase
           .from('rooms')
           .select('*')
@@ -61,9 +68,11 @@ const Room = () => {
           return;
         }
 
+        console.log("Room data fetched:", roomData);
         setRoom(roomData);
 
         // Check if the user is a member of this room
+        console.log("Checking membership...");
         const { data: memberData, error: memberError } = await supabase
           .from('room_members')
           .select('*')
@@ -80,6 +89,7 @@ const Room = () => {
 
         if (!memberData) {
           // If not a member, try to add them
+          console.log("Not a member, joining room...");
           const { error: joinError } = await supabase
             .from('room_members')
             .insert([{ 
@@ -97,8 +107,10 @@ const Room = () => {
             toast.success('You have joined the room');
           }
         } else {
+          console.log("User is already a member:", memberData);
           // Check if user is owner
           if (memberData.role === 'owner' || roomData.created_by === user.id) {
+            console.log("User is the owner of this room");
             setIsOwner(true);
           }
         }
@@ -109,8 +121,8 @@ const Room = () => {
         // Fetch messages
         await fetchMessages();
       } catch (error) {
-        console.error('Error:', error);
-        toast.error('An error occurred');
+        console.error('Error in fetchRoomDetails:', error);
+        toast.error('An error occurred loading the room');
       } finally {
         setLoading(false);
       }
@@ -123,14 +135,23 @@ const Room = () => {
   useEffect(() => {
     if (!roomId || !user) return;
 
-    // Clear existing channel if any
+    console.log("Setting up real-time channels for room:", roomId);
+
+    // Clear existing channels if any
     if (channelRef.current) {
+      console.log("Removing existing channel");
       supabase.removeChannel(channelRef.current);
     }
 
-    // Create and subscribe to the channel
-    const channel = supabase
-      .channel(`room-${roomId}`)
+    if (mediaChannelRef.current) {
+      console.log("Removing existing media channel");
+      supabase.removeChannel(mediaChannelRef.current);
+    }
+
+    // Create and subscribe to the messages channel
+    console.log("Creating messages channel");
+    const messagesChannel = supabase
+      .channel(`room-messages-${roomId}`)
       .on(
         'postgres_changes',
         {
@@ -146,13 +167,14 @@ const Room = () => {
             
             // Only process messages that aren't from the current user or weren't just sent by us
             if (newMessage.user_id !== user.id || lastMessageSentRef.current !== newMessage.id) {
-              // Get user email
+              // Get user username
               const { data } = await supabase
                 .from('profiles')
                 .select('username')
                 .eq('id', newMessage.user_id)
                 .single();
                 
+              console.log("Adding message to state with username:", data?.username);
               setMessages((prev) => [
                 ...prev,
                 { ...newMessage, user_email: data?.username || newMessage.user_id },
@@ -161,6 +183,14 @@ const Room = () => {
           }
         }
       )
+      .subscribe((status) => {
+        console.log('Messages channel status:', status);
+      });
+
+    // Create and subscribe to the media channel
+    console.log("Creating media channel");
+    const mediaChannel = supabase
+      .channel(`room-media-${roomId}`)
       .on(
         'postgres_changes',
         {
@@ -170,18 +200,21 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
-          console.log('Media session update:', payload);
+          console.log('Media session update received:', payload);
           if (payload.new && typeof payload.new === 'object') {
             // Ensure payload has the expected properties
             if ('media_url' in payload.new) {
-              // Apply the update only if it's from another user (owner)
+              console.log("Updating media session state:", payload.new);
+              setCurrentMediaSession(payload.new);
+              
+              // Only update the URL field if not the owner (owner controls it)
               if (!isOwner) {
-                setCurrentMediaSession(payload.new);
                 setYoutubeUrl(payload.new.media_url);
                 
                 // Force iframe refresh by updating its src
                 const iframe = document.querySelector('iframe');
                 if (iframe) {
+                  console.log("Updating iframe src to:", payload.new.media_url);
                   iframe.src = payload.new.media_url;
                 }
                 
@@ -192,19 +225,20 @@ const Room = () => {
         }
       )
       .subscribe((status) => {
-        console.log('Subscription status:', status);
-        if (status === 'SUBSCRIBED') {
-          console.log('Successfully subscribed to room channel');
-        }
+        console.log('Media channel status:', status);
       });
 
-    // Store channel reference for cleanup
-    channelRef.current = channel;
+    // Store channel references for cleanup
+    channelRef.current = messagesChannel;
+    mediaChannelRef.current = mediaChannel;
 
     return () => {
-      console.log('Cleaning up real-time subscription');
+      console.log('Cleaning up real-time subscriptions');
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
+      }
+      if (mediaChannelRef.current) {
+        supabase.removeChannel(mediaChannelRef.current);
       }
     };
   }, [roomId, user, isOwner]);
@@ -218,6 +252,7 @@ const Room = () => {
     if (!roomId) return;
     
     try {
+      console.log("Fetching current media session");
       const { data, error } = await supabase
         .from('media_sessions')
         .select('*')
@@ -270,9 +305,10 @@ const Room = () => {
         user_email: msg.profiles?.username || msg.user_id,
       }));
 
+      console.log('Formatted messages:', formattedMessages);
       setMessages(formattedMessages);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in fetchMessages:', error);
       toast.error('Failed to load messages');
     }
   };
@@ -289,13 +325,15 @@ const Room = () => {
         content: newMessage.trim()
       });
       
-      const { data, error } = await supabase.from('messages').insert([
-        {
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([{
           room_id: roomId,
           user_id: user.id,
           content: newMessage.trim(),
-        },
-      ]).select('id').single();
+        }])
+        .select('id')
+        .single();
 
       if (error) {
         console.error('Error sending message:', error);
@@ -325,7 +363,7 @@ const Room = () => {
       // Clear the input
       setNewMessage('');
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in handleSendMessage:', error);
       toast.error('Failed to send message');
     } finally {
       setSendingMessage(false);
@@ -343,6 +381,7 @@ const Room = () => {
     }
     
     try {
+      console.log("Updating media session with URL:", embedUrl);
       // Create or update media session
       const { error } = await supabase
         .from('media_sessions')
@@ -364,14 +403,19 @@ const Room = () => {
         
         // Update local state for owner as well
         setCurrentMediaSession({
-          id: '',
           media_url: embedUrl,
           is_playing: true,
           current_position: 0
         });
+        
+        // Force iframe refresh
+        const iframe = document.querySelector('iframe');
+        if (iframe) {
+          iframe.src = embedUrl;
+        }
       }
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in handleYoutubeSubmit:', error);
       toast.error('An error occurred');
     }
   };
@@ -384,18 +428,25 @@ const Room = () => {
   // Function to get YouTube embed URL
   const getYoutubeEmbedUrl = (url) => {
     try {
-      const urlObj = new URL(url);
-      if (urlObj.hostname.includes('youtube.com')) {
-        const videoId = urlObj.searchParams.get('v');
-        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1`;
-      } else if (urlObj.hostname.includes('youtu.be')) {
-        const videoId = urlObj.pathname.substring(1);
-        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1`;
+      // Convert to embed URL format
+      if (url.includes('youtube.com/watch')) {
+        const videoId = url.split('v=')[1]?.split('&')[0];
+        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+      } else if (url.includes('youtu.be')) {
+        const videoId = url.split('youtu.be/')[1]?.split('?')[0];
+        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+      } else if (url.includes('youtube.com/embed')) {
+        // Already an embed URL, but ensure autoplay and JS API are enabled
+        if (!url.includes('autoplay=1')) {
+          return url + (url.includes('?') ? '&' : '?') + 'autoplay=1&enablejsapi=1';
+        }
+        return url;
       }
+      return url; // Return the original URL if it doesn't match YouTube patterns
     } catch (e) {
+      console.error('Error parsing YouTube URL:', e);
       return '';
     }
-    return '';
   };
 
   const handleShare = () => {
@@ -487,7 +538,7 @@ const Room = () => {
                     className="flex-1"
                   />
                   <Button type="submit">
-                    Play
+                    Play for Everyone
                   </Button>
                 </form>
               ) : (
@@ -499,6 +550,7 @@ const Room = () => {
               <div className="aspect-video bg-black relative rounded-md overflow-hidden">
                 {currentMediaSession?.media_url ? (
                   <iframe
+                    ref={playerRef}
                     src={currentMediaSession.media_url}
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                     allowFullScreen
@@ -541,7 +593,7 @@ const Room = () => {
                         key={message.id}
                         className={`p-3 rounded-lg max-w-[80%] ${
                           message.user_id === user?.id
-                            ? 'ml-auto bg-synqup-purple text-white'
+                            ? 'ml-auto bg-purple-600 text-white'
                             : 'bg-gray-100 dark:bg-gray-800'
                         }`}
                       >

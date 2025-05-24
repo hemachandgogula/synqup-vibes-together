@@ -30,50 +30,25 @@ const Room = () => {
   const channelRef = useRef(null);
   const mediaChannelRef = useRef(null);
   const playerRef = useRef(null);
-  const reconnectTimeoutRef = useRef(null);
-  const isConnectedRef = useRef(false);
 
-  // Enhanced session persistence - prevent logout on tab switching
+  // Initialize room
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && user && roomId) {
-        // Reconnect when tab becomes visible again
-        console.log('Tab became visible, ensuring connection...');
-        if (!isConnectedRef.current) {
-          setupRealtimeConnections();
-        }
-      }
-    };
-
-    const handleBeforeUnload = () => {
-      // Clean up connections properly
-      cleanup();
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      cleanup();
-    };
-  }, [user, roomId]);
-
-  // Check if user is logged in and initialize room
-  useEffect(() => {
-    if (!user) {
-      navigate('/login');
-      return;
-    }
-    
-    if (!roomId) {
+    if (!user || !roomId) {
       navigate('/dashboard');
       return;
     }
 
     initializeRoom();
+    
+    return () => {
+      cleanup();
+    };
   }, [user, roomId, navigate]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const initializeRoom = async () => {
     try {
@@ -165,9 +140,9 @@ const Room = () => {
     // Clean up existing connections
     cleanup();
 
-    // Messages channel with enhanced error handling
+    // Messages channel
     const messagesChannel = supabase
-      .channel(`room-messages-${roomId}-${Date.now()}`)
+      .channel(`room-messages-${roomId}`)
       .on(
         'postgres_changes',
         {
@@ -195,21 +170,13 @@ const Room = () => {
           }
         }
       )
-      .on('system', {}, (payload) => {
-        console.log('Messages channel system event:', payload);
-        if (payload.event === 'SYSTEM' && payload.payload?.event === 'phx_error') {
-          console.log('Messages channel error, attempting reconnect...');
-          reconnectWithDelay();
-        }
-      })
       .subscribe((status) => {
         console.log('Messages channel status:', status);
-        isConnectedRef.current = status === 'SUBSCRIBED';
       });
 
     // Media synchronization channel
     const mediaChannel = supabase
-      .channel(`room-media-${roomId}-${Date.now()}`)
+      .channel(`room-media-${roomId}`)
       .on(
         'postgres_changes',
         {
@@ -220,7 +187,7 @@ const Room = () => {
         },
         (payload) => {
           console.log('Media session update:', payload);
-          if (payload.new && 'media_url' in payload.new) {
+          if (payload.new) {
             setCurrentMediaSession(payload.new);
             
             // Sync video for non-owners
@@ -232,7 +199,7 @@ const Room = () => {
               setTimeout(() => {
                 const iframe = playerRef.current;
                 if (iframe && payload.new.media_url) {
-                  iframe.src = payload.new.media_url + '&t=' + Date.now();
+                  iframe.src = payload.new.media_url;
                 }
               }, 100);
               
@@ -241,30 +208,12 @@ const Room = () => {
           }
         }
       )
-      .on('system', {}, (payload) => {
-        console.log('Media channel system event:', payload);
-        if (payload.event === 'SYSTEM' && payload.payload?.event === 'phx_error') {
-          console.log('Media channel error, attempting reconnect...');
-          reconnectWithDelay();
-        }
-      })
       .subscribe((status) => {
         console.log('Media channel status:', status);
       });
 
     channelRef.current = messagesChannel;
     mediaChannelRef.current = mediaChannel;
-  };
-
-  const reconnectWithDelay = () => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    
-    reconnectTimeoutRef.current = setTimeout(() => {
-      console.log('Attempting to reconnect real-time channels...');
-      setupRealtimeConnections();
-    }, 2000);
   };
 
   const cleanup = () => {
@@ -279,19 +228,7 @@ const Room = () => {
       supabase.removeChannel(mediaChannelRef.current);
       mediaChannelRef.current = null;
     }
-    
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    
-    isConnectedRef.current = false;
   };
-
-  // Scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   const fetchCurrentMediaSession = async () => {
     try {
@@ -351,30 +288,19 @@ const Room = () => {
 
     setSendingMessage(true);
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('messages')
         .insert([{
           room_id: roomId,
           user_id: user.id,
           content: newMessage.trim(),
-        }])
-        .select('id')
-        .single();
+        }]);
 
       if (error) {
         console.error('Error sending message:', error);
         toast.error('Failed to send message');
         return;
       }
-
-      // Add message locally for immediate feedback
-      setMessages(prev => [...prev, {
-        id: data.id,
-        content: newMessage.trim(),
-        created_at: new Date().toISOString(),
-        user_id: user.id,
-        user_email: 'You'
-      }]);
 
       setNewMessage('');
     } catch (error) {
@@ -588,7 +514,7 @@ const Room = () => {
                       className={`p-3 rounded-lg max-w-[85%] break-words ${
                         message.user_id === user?.id
                           ? 'ml-auto bg-primary text-primary-foreground'
-                          : 'bg-muted text-muted-foreground'
+                          : 'bg-muted text-foreground'
                       }`}
                     >
                       <div className={`text-xs mb-1 ${

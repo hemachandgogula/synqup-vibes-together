@@ -2,7 +2,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 interface AuthContextType {
   user: User | null;
@@ -19,24 +19,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
-    // Set up auth state listener FIRST
+    // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         console.log('Auth state change:', event, session?.user?.email);
         setSession(session);
         setUser(session?.user ?? null);
         
-        if (event === 'SIGNED_IN') {
+        // Only navigate on explicit sign in/out events, not token refreshes
+        if (event === 'SIGNED_IN' && !location.pathname.includes('/room') && !location.pathname.includes('/dashboard')) {
           navigate('/dashboard');
         } else if (event === 'SIGNED_OUT') {
           navigate('/login');
         }
+        // Don't navigate on TOKEN_REFRESHED to prevent tab switching issues
       }
     );
 
-    // THEN check for existing session
+    // Check for existing session
     supabase.auth.getSession().then(({ data: { session } }) => {
       console.log('Initial session check:', session?.user?.email);
       setSession(session);
@@ -45,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, [navigate]);
+  }, [navigate, location.pathname]);
 
   const signUp = async (email: string, password: string) => {
     const { error } = await supabase.auth.signUp({

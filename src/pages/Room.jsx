@@ -28,130 +28,146 @@ const Room = () => {
   const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
-  const lastMessageSentRef = useRef(null);
-  const playerRef = useRef(null);
   const mediaChannelRef = useRef(null);
+  const playerRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const isConnectedRef = useRef(false);
 
-  // Check if user is logged in
+  // Enhanced session persistence - prevent logout on tab switching
   useEffect(() => {
-    if (!user) {
-      navigate('/login');
-    } else {
-      console.log("User authenticated:", user.id);
-    }
-  }, [user, navigate]);
-
-  // Fetch room details
-  useEffect(() => {
-    if (!user || !roomId) {
-      if (!user) navigate('/login');
-      else navigate('/dashboard');
-      return;
-    }
-
-    console.log("Fetching room details for roomId:", roomId);
-    
-    const fetchRoomDetails = async () => {
-      try {
-        setLoading(true);
-        console.log("Fetching room data...");
-        const { data: roomData, error: roomError } = await supabase
-          .from('rooms')
-          .select('*')
-          .eq('id', roomId)
-          .single();
-
-        if (roomError) {
-          console.error('Error fetching room:', roomError);
-          toast.error('Could not find room');
-          navigate('/dashboard');
-          return;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user && roomId) {
+        // Reconnect when tab becomes visible again
+        console.log('Tab became visible, ensuring connection...');
+        if (!isConnectedRef.current) {
+          setupRealtimeConnections();
         }
-
-        console.log("Room data fetched:", roomData);
-        setRoom(roomData);
-
-        // Check if the user is a member of this room
-        console.log("Checking membership...");
-        const { data: memberData, error: memberError } = await supabase
-          .from('room_members')
-          .select('*')
-          .eq('room_id', roomId)
-          .eq('user_id', user.id)
-          .maybeSingle();
-
-        if (memberError) {
-          console.error('Error checking membership:', memberError);
-          toast.error('Error checking room membership');
-          navigate('/dashboard');
-          return;
-        }
-
-        if (!memberData) {
-          // If not a member, try to add them
-          console.log("Not a member, joining room...");
-          const { error: joinError } = await supabase
-            .from('room_members')
-            .insert([{ 
-              room_id: roomId, 
-              user_id: user.id,
-              role: 'member'
-            }]);
-            
-          if (joinError) {
-            console.error('Error joining room:', joinError);
-            toast.error('You are not a member of this room and could not join');
-            navigate('/dashboard');
-            return;
-          } else {
-            toast.success('You have joined the room');
-          }
-        } else {
-          console.log("User is already a member:", memberData);
-          // Check if user is owner
-          if (memberData.role === 'owner' || roomData.created_by === user.id) {
-            console.log("User is the owner of this room");
-            setIsOwner(true);
-          }
-        }
-
-        // Fetch current media session
-        await fetchCurrentMediaSession();
-
-        // Fetch messages
-        await fetchMessages();
-      } catch (error) {
-        console.error('Error in fetchRoomDetails:', error);
-        toast.error('An error occurred loading the room');
-      } finally {
-        setLoading(false);
       }
     };
 
-    fetchRoomDetails();
+    const handleBeforeUnload = () => {
+      // Clean up connections properly
+      cleanup();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanup();
+    };
+  }, [user, roomId]);
+
+  // Check if user is logged in and initialize room
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+    
+    if (!roomId) {
+      navigate('/dashboard');
+      return;
+    }
+
+    initializeRoom();
   }, [user, roomId, navigate]);
 
-  // Set up real-time subscription for messages and media
-  useEffect(() => {
-    if (!roomId || !user) return;
+  const initializeRoom = async () => {
+    try {
+      setLoading(true);
+      console.log("Initializing room:", roomId);
+      
+      // Fetch room details
+      const { data: roomData, error: roomError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', roomId)
+        .single();
 
-    console.log("Setting up real-time channels for room:", roomId);
+      if (roomError) {
+        console.error('Error fetching room:', roomError);
+        toast.error('Could not find room');
+        navigate('/dashboard');
+        return;
+      }
 
-    // Clear existing channels if any
-    if (channelRef.current) {
-      console.log("Removing existing channel");
-      supabase.removeChannel(channelRef.current);
+      setRoom(roomData);
+
+      // Check/ensure membership
+      await ensureMembership();
+
+      // Load initial data
+      await Promise.all([
+        fetchCurrentMediaSession(),
+        fetchMessages()
+      ]);
+
+      // Setup real-time connections
+      setupRealtimeConnections();
+
+    } catch (error) {
+      console.error('Error initializing room:', error);
+      toast.error('Failed to load room');
+      navigate('/dashboard');
+    } finally {
+      setLoading(false);
     }
+  };
 
-    if (mediaChannelRef.current) {
-      console.log("Removing existing media channel");
-      supabase.removeChannel(mediaChannelRef.current);
+  const ensureMembership = async () => {
+    try {
+      const { data: memberData, error: memberError } = await supabase
+        .from('room_members')
+        .select('*')
+        .eq('room_id', roomId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (memberError) {
+        console.error('Error checking membership:', memberError);
+        throw memberError;
+      }
+
+      if (!memberData) {
+        // Join the room
+        const { error: joinError } = await supabase
+          .from('room_members')
+          .insert([{ 
+            room_id: roomId, 
+            user_id: user.id,
+            role: 'member'
+          }]);
+          
+        if (joinError) {
+          console.error('Error joining room:', joinError);
+          throw new Error('Could not join room');
+        }
+        
+        toast.success('Joined the room');
+      } else {
+        // Check if user is owner
+        if (memberData.role === 'owner') {
+          setIsOwner(true);
+        }
+      }
+    } catch (error) {
+      console.error('Error ensuring membership:', error);
+      throw error;
     }
+  };
 
-    // Create and subscribe to the messages channel
-    console.log("Creating messages channel");
+  const setupRealtimeConnections = () => {
+    console.log("Setting up real-time connections for room:", roomId);
+    
+    // Clean up existing connections
+    cleanup();
+
+    // Messages channel with enhanced error handling
     const messagesChannel = supabase
-      .channel(`room-messages-${roomId}`)
+      .channel(`room-messages-${roomId}-${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -162,35 +178,38 @@ const Room = () => {
         },
         async (payload) => {
           console.log('New message received:', payload);
-          if (payload.new && typeof payload.new === 'object') {
-            const newMessage = payload.new;
+          if (payload.new && payload.new.user_id !== user.id) {
+            // Get user info for the message
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('username')
+              .eq('id', payload.new.user_id)
+              .single();
+              
+            const messageWithUser = {
+              ...payload.new,
+              user_email: profileData?.username || 'Unknown user'
+            };
             
-            // Only process messages that aren't from the current user or weren't just sent by us
-            if (newMessage.user_id !== user.id || lastMessageSentRef.current !== newMessage.id) {
-              // Get user username
-              const { data } = await supabase
-                .from('profiles')
-                .select('username')
-                .eq('id', newMessage.user_id)
-                .single();
-                
-              console.log("Adding message to state with username:", data?.username);
-              setMessages((prev) => [
-                ...prev,
-                { ...newMessage, user_email: data?.username || newMessage.user_id },
-              ]);
-            }
+            setMessages(prev => [...prev, messageWithUser]);
           }
         }
       )
+      .on('system', {}, (payload) => {
+        console.log('Messages channel system event:', payload);
+        if (payload.event === 'SYSTEM' && payload.payload?.event === 'phx_error') {
+          console.log('Messages channel error, attempting reconnect...');
+          reconnectWithDelay();
+        }
+      })
       .subscribe((status) => {
         console.log('Messages channel status:', status);
+        isConnectedRef.current = status === 'SUBSCRIBED';
       });
 
-    // Create and subscribe to the media channel
-    console.log("Creating media channel");
+    // Media synchronization channel
     const mediaChannel = supabase
-      .channel(`room-media-${roomId}`)
+      .channel(`room-media-${roomId}-${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -200,48 +219,74 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
-          console.log('Media session update received:', payload);
-          if (payload.new && typeof payload.new === 'object') {
-            // Ensure payload has the expected properties
-            if ('media_url' in payload.new) {
-              console.log("Updating media session state:", payload.new);
-              setCurrentMediaSession(payload.new);
+          console.log('Media session update:', payload);
+          if (payload.new && 'media_url' in payload.new) {
+            setCurrentMediaSession(payload.new);
+            
+            // Sync video for non-owners
+            if (!isOwner && payload.new.media_url !== youtubeUrl) {
+              console.log('Syncing video to:', payload.new.media_url);
+              setYoutubeUrl(payload.new.media_url);
               
-              // Only update the URL field if not the owner (owner controls it)
-              if (!isOwner) {
-                setYoutubeUrl(payload.new.media_url);
-                
-                // Force iframe refresh by updating its src
-                const iframe = document.querySelector('iframe');
-                if (iframe) {
-                  console.log("Updating iframe src to:", payload.new.media_url);
-                  iframe.src = payload.new.media_url;
+              // Force iframe reload for sync
+              setTimeout(() => {
+                const iframe = playerRef.current;
+                if (iframe && payload.new.media_url) {
+                  iframe.src = payload.new.media_url + '&t=' + Date.now();
                 }
-                
-                toast.success("Media updated by room owner");
-              }
+              }, 100);
+              
+              toast.success('Video synced by room owner');
             }
           }
         }
       )
+      .on('system', {}, (payload) => {
+        console.log('Media channel system event:', payload);
+        if (payload.event === 'SYSTEM' && payload.payload?.event === 'phx_error') {
+          console.log('Media channel error, attempting reconnect...');
+          reconnectWithDelay();
+        }
+      })
       .subscribe((status) => {
         console.log('Media channel status:', status);
       });
 
-    // Store channel references for cleanup
     channelRef.current = messagesChannel;
     mediaChannelRef.current = mediaChannel;
+  };
 
-    return () => {
-      console.log('Cleaning up real-time subscriptions');
-      if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
-      }
-      if (mediaChannelRef.current) {
-        supabase.removeChannel(mediaChannelRef.current);
-      }
-    };
-  }, [roomId, user, isOwner]);
+  const reconnectWithDelay = () => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    
+    reconnectTimeoutRef.current = setTimeout(() => {
+      console.log('Attempting to reconnect real-time channels...');
+      setupRealtimeConnections();
+    }, 2000);
+  };
+
+  const cleanup = () => {
+    console.log('Cleaning up real-time connections');
+    
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
+    
+    if (mediaChannelRef.current) {
+      supabase.removeChannel(mediaChannelRef.current);
+      mediaChannelRef.current = null;
+    }
+    
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    
+    isConnectedRef.current = false;
+  };
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -249,10 +294,7 @@ const Room = () => {
   }, [messages]);
 
   const fetchCurrentMediaSession = async () => {
-    if (!roomId) return;
-    
     try {
-      console.log("Fetching current media session");
       const { data, error } = await supabase
         .from('media_sessions')
         .select('*')
@@ -261,7 +303,6 @@ const Room = () => {
         .limit(1)
         .maybeSingle();
         
-      console.log('Current media session:', data);
       if (data) {
         setCurrentMediaSession(data);
         setYoutubeUrl(data.media_url);
@@ -272,10 +313,7 @@ const Room = () => {
   };
 
   const fetchMessages = async () => {
-    if (!roomId) return;
-
     try {
-      console.log('Fetching messages for room:', roomId);
       const { data, error } = await supabase
         .from('messages')
         .select(`
@@ -290,41 +328,29 @@ const Room = () => {
 
       if (error) {
         console.error('Error fetching messages:', error);
-        toast.error('Failed to load messages');
         return;
       }
 
-      console.log('Messages fetched:', data);
-
-      // Transform data to include user_email
       const formattedMessages = data.map((msg) => ({
         id: msg.id,
         content: msg.content,
         created_at: msg.created_at,
         user_id: msg.user_id,
-        user_email: msg.profiles?.username || msg.user_id,
+        user_email: msg.profiles?.username || 'Unknown user',
       }));
 
-      console.log('Formatted messages:', formattedMessages);
       setMessages(formattedMessages);
     } catch (error) {
       console.error('Error in fetchMessages:', error);
-      toast.error('Failed to load messages');
     }
   };
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!newMessage.trim() || !user || !roomId) return;
+    if (!newMessage.trim() || !user || !roomId || sendingMessage) return;
 
     setSendingMessage(true);
     try {
-      console.log('Sending message:', {
-        room_id: roomId,
-        user_id: user.id,
-        content: newMessage.trim()
-      });
-      
       const { data, error } = await supabase
         .from('messages')
         .insert([{
@@ -341,26 +367,15 @@ const Room = () => {
         return;
       }
 
-      console.log('Message sent successfully with ID:', data?.id);
-      
-      // Store the ID of the message we just sent to prevent duplication
-      if (data?.id) {
-        lastMessageSentRef.current = data.id;
-      }
-      
-      // Add our own message to the messages list
-      setMessages((prev) => [
-        ...prev, 
-        { 
-          id: data?.id || 'temp-id', 
-          content: newMessage.trim(), 
-          created_at: new Date().toISOString(),
-          user_id: user.id,
-          user_email: 'You'
-        }
-      ]);
-      
-      // Clear the input
+      // Add message locally for immediate feedback
+      setMessages(prev => [...prev, {
+        id: data.id,
+        content: newMessage.trim(),
+        created_at: new Date().toISOString(),
+        user_id: user.id,
+        user_email: 'You'
+      }]);
+
       setNewMessage('');
     } catch (error) {
       console.error('Error in handleSendMessage:', error);
@@ -381,8 +396,6 @@ const Room = () => {
     }
     
     try {
-      console.log("Updating media session with URL:", embedUrl);
-      // Create or update media session
       const { error } = await supabase
         .from('media_sessions')
         .upsert({
@@ -391,44 +404,28 @@ const Room = () => {
           media_type: 'youtube',
           is_playing: true,
           current_position: 0,
-          media_title: youtubeUrl.split('v=')[1] || 'YouTube Video'
+          media_title: 'YouTube Video'
         });
         
       if (error) {
         console.error('Error updating media session:', error);
         toast.error('Failed to update media');
       } else {
-        toast.success('Media updated for all viewers');
-        console.log('Media session updated successfully with URL:', embedUrl);
-        
-        // Update local state for owner as well
+        toast.success('Video updated for all viewers');
         setCurrentMediaSession({
           media_url: embedUrl,
           is_playing: true,
           current_position: 0
         });
-        
-        // Force iframe refresh
-        const iframe = document.querySelector('iframe');
-        if (iframe) {
-          iframe.src = embedUrl;
-        }
       }
     } catch (error) {
       console.error('Error in handleYoutubeSubmit:', error);
-      toast.error('An error occurred');
+      toast.error('Failed to update video');
     }
   };
 
-  const formatTime = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
-  // Function to get YouTube embed URL
   const getYoutubeEmbedUrl = (url) => {
     try {
-      // Convert to embed URL format
       if (url.includes('youtube.com/watch')) {
         const videoId = url.split('v=')[1]?.split('&')[0];
         if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
@@ -436,17 +433,18 @@ const Room = () => {
         const videoId = url.split('youtu.be/')[1]?.split('?')[0];
         if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
       } else if (url.includes('youtube.com/embed')) {
-        // Already an embed URL, but ensure autoplay and JS API are enabled
-        if (!url.includes('autoplay=1')) {
-          return url + (url.includes('?') ? '&' : '?') + 'autoplay=1&enablejsapi=1';
-        }
-        return url;
+        return url.includes('autoplay=1') ? url : url + (url.includes('?') ? '&' : '?') + 'autoplay=1&enablejsapi=1';
       }
-      return url; // Return the original URL if it doesn't match YouTube patterns
+      return url;
     } catch (e) {
       console.error('Error parsing YouTube URL:', e);
       return '';
     }
+  };
+
+  const formatTime = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   const handleShare = () => {
@@ -458,20 +456,14 @@ const Room = () => {
           setTimeout(() => setRoomCodeCopied(false), 2000);
         })
         .catch(() => toast.error('Failed to copy room code'));
-    } else {
-      toast.error('No room code available');
     }
-  };
-
-  const toggleMembersList = () => {
-    setShowMembers(!showMembers);
   };
 
   if (loading) {
     return (
       <div className="min-h-screen bg-background p-8">
         <div className="max-w-6xl mx-auto">
-          <div className="text-center">Loading room...</div>
+          <div className="text-center text-foreground">Loading room...</div>
         </div>
       </div>
     );
@@ -484,7 +476,7 @@ const Room = () => {
           <Button 
             variant="ghost" 
             onClick={() => navigate('/dashboard')}
-            className="gap-2"
+            className="gap-2 text-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Back to Dashboard</span>
@@ -494,7 +486,7 @@ const Room = () => {
             {isOwner && (
               <Button 
                 variant="outline"
-                onClick={toggleMembersList}
+                onClick={() => setShowMembers(!showMembers)}
                 className="gap-2"
               >
                 <Users className="h-4 w-4" />
@@ -526,8 +518,8 @@ const Room = () => {
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           {/* Media Player Section */}
           <div className="xl:col-span-3">
-            <Card className="p-6 mb-4">
-              <h2 className="text-xl font-semibold mb-4 text-foreground">Media Player</h2>
+            <Card className="p-6 mb-4 bg-card border-border">
+              <h2 className="text-xl font-semibold mb-4 text-card-foreground">Media Player</h2>
               
               {isOwner ? (
                 <form onSubmit={handleYoutubeSubmit} className="flex gap-2 mb-4">
@@ -535,9 +527,12 @@ const Room = () => {
                     value={youtubeUrl}
                     onChange={(e) => setYoutubeUrl(e.target.value)}
                     placeholder="Enter YouTube URL"
-                    className="flex-1"
+                    className="flex-1 bg-background text-foreground border-input"
                   />
-                  <Button type="submit" className="bg-synqup-purple hover:bg-synqup-dark-purple">
+                  <Button 
+                    type="submit" 
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                  >
                     Play for Everyone
                   </Button>
                 </form>
@@ -547,7 +542,7 @@ const Room = () => {
                 </div>
               )}
               
-              <div className="aspect-video bg-black relative rounded-lg overflow-hidden border">
+              <div className="aspect-video bg-black relative rounded-lg overflow-hidden border border-border">
                 {currentMediaSession?.media_url ? (
                   <iframe
                     ref={playerRef}
@@ -556,9 +551,9 @@ const Room = () => {
                     allowFullScreen
                     className="absolute top-0 left-0 w-full h-full"
                     title="YouTube Video"
-                  ></iframe>
+                  />
                 ) : (
-                  <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center text-gray-400">
+                  <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center text-muted-foreground">
                     {isOwner 
                       ? 'Enter a YouTube URL to watch together' 
                       : 'Waiting for room owner to play a video'}
@@ -578,8 +573,8 @@ const Room = () => {
           
           {/* Chat Section */}
           <div className="xl:col-span-1">
-            <Card className="p-4 h-[600px] flex flex-col">
-              <h2 className="text-xl font-semibold mb-4 text-foreground">Chat</h2>
+            <Card className="p-4 h-[600px] flex flex-col bg-card border-border">
+              <h2 className="text-xl font-semibold mb-4 text-card-foreground">Chat</h2>
               
               <div className="flex-1 overflow-auto mb-4 space-y-3">
                 {messages.length === 0 ? (
@@ -592,22 +587,25 @@ const Room = () => {
                       key={message.id}
                       className={`p-3 rounded-lg max-w-[85%] break-words ${
                         message.user_id === user?.id
-                          ? 'ml-auto bg-synqup-purple text-white'
-                          : 'bg-muted text-foreground'
+                          ? 'ml-auto bg-primary text-primary-foreground'
+                          : 'bg-muted text-muted-foreground'
                       }`}
                     >
                       <div className={`text-xs mb-1 ${
                         message.user_id === user?.id
-                          ? 'text-white/80'
+                          ? 'text-primary-foreground/80'
                           : 'text-muted-foreground'
                       }`}>
                         {message.user_id === user?.id
                           ? 'You'
-                          : message.user_email || 'User'}
+                          : message.user_email}
                         {' · '}
                         {formatTime(message.created_at)}
                       </div>
-                      <div className={message.user_id === user?.id ? 'text-white' : 'text-foreground'}>
+                      <div className={message.user_id === user?.id 
+                        ? 'text-primary-foreground' 
+                        : 'text-foreground'
+                      }>
                         {message.content}
                       </div>
                     </div>
@@ -622,7 +620,7 @@ const Room = () => {
                   onChange={(e) => setNewMessage(e.target.value)}
                   placeholder="Type a message..."
                   disabled={sendingMessage}
-                  className="flex-1 min-h-[60px] max-h-[120px] resize-none text-foreground placeholder:text-muted-foreground"
+                  className="flex-1 min-h-[60px] max-h-[120px] resize-none bg-background text-foreground border-input placeholder:text-muted-foreground"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -634,7 +632,7 @@ const Room = () => {
                   type="submit" 
                   disabled={sendingMessage || !newMessage.trim()} 
                   size="icon" 
-                  className="h-[60px] bg-synqup-purple hover:bg-synqup-dark-purple"
+                  className="h-[60px] bg-primary hover:bg-primary/90 text-primary-foreground"
                 >
                   <Send className="h-4 w-4" />
                 </Button>

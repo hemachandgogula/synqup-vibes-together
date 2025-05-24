@@ -5,47 +5,145 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = "https://itrjjjrwthdhmeysgjlm.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml0cmpqanJ3dGhkaG1leXNnamxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2MDY3MjYsImV4cCI6MjA2MTE4MjcyNn0.vwTYvDOllmfoBmow8-2ltytkd0vipMIJtsPqABC7Xfo";
 
-// Import the supabase client like this:
-// import { supabase } from "@/integrations/supabase/client";
-
-// Initialize the Supabase client with better persistence configuration
+// Initialize the Supabase client with enhanced persistence and stability
 export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
-    storage: typeof window !== 'undefined' ? localStorage : undefined
+    storage: typeof window !== 'undefined' ? {
+      getItem: (key) => {
+        try {
+          return localStorage.getItem(key);
+        } catch (e) {
+          console.warn('Could not access localStorage:', e);
+          return null;
+        }
+      },
+      setItem: (key, value) => {
+        try {
+          localStorage.setItem(key, value);
+        } catch (e) {
+          console.warn('Could not write to localStorage:', e);
+        }
+      },
+      removeItem: (key) => {
+        try {
+          localStorage.removeItem(key);
+        } catch (e) {
+          console.warn('Could not remove from localStorage:', e);
+        }
+      }
+    } : undefined,
+    // Enhanced session management
+    flowType: 'pkce',
+    debug: process.env.NODE_ENV === 'development'
   },
   realtime: {
     params: {
-      eventsPerSecond: 10
+      eventsPerSecond: 20,
+      timeout: 30000,
+      heartbeatIntervalMs: 15000
+    },
+    // Enhanced reconnection strategy
+    reconnectAfterMs: function (tries) {
+      // Exponential backoff with jitter
+      const baseDelay = 1000;
+      const maxDelay = 30000;
+      const jitter = Math.random() * 0.1 * baseDelay;
+      const delay = Math.min(baseDelay * Math.pow(2, tries - 1) + jitter, maxDelay);
+      console.log(`Reconnecting in ${delay}ms (attempt ${tries})`);
+      return delay;
+    }
+  },
+  global: {
+    headers: {
+      'X-Client-Info': 'supabase-js-web'
     }
   }
 });
 
-// Set up the Supabase realtime client
-supabase.realtime.setAuth(SUPABASE_PUBLISHABLE_KEY);
+// Enhanced session recovery
+if (typeof window !== 'undefined') {
+  // Handle connection recovery when the tab becomes visible
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      // Check if session is still valid
+      supabase.auth.getSession().then(({ data: { session }, error }) => {
+        if (error) {
+          console.error('Session check error:', error);
+        } else if (session) {
+          console.log('Session recovered after tab visibility change');
+          // Refresh the session to ensure it's up to date
+          supabase.auth.refreshSession();
+        }
+      });
+    }
+  });
 
-// Enable Supabase realtime for media_sessions and messages tables
+  // Handle online/offline events
+  window.addEventListener('online', () => {
+    console.log('Connection restored, refreshing session...');
+    supabase.auth.refreshSession();
+  });
+
+  window.addEventListener('offline', () => {
+    console.log('Connection lost');
+  });
+}
+
+// Set up the Supabase realtime client with better error handling
+if (supabase.realtime) {
+  supabase.realtime.setAuth(SUPABASE_PUBLISHABLE_KEY);
+  
+  // Global realtime error handling
+  supabase.realtime.onOpen(() => {
+    console.log('Realtime connection opened');
+  });
+
+  supabase.realtime.onClose(() => {
+    console.log('Realtime connection closed');
+  });
+
+  supabase.realtime.onError((error) => {
+    console.error('Realtime connection error:', error);
+  });
+}
+
+// Enable realtime for tables
 const enableRealtimeForTable = async (tableName) => {
   try {
     console.log(`Enabling realtime for ${tableName} table`);
-    // Subscribe to the changes
-    await supabase
+    const channel = supabase
       .channel(`public:${tableName}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: tableName }, (payload) => {
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: tableName 
+      }, (payload) => {
         console.log(`Change received for ${tableName}:`, payload);
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log(`Realtime status for ${tableName}:`, status);
+      });
+      
     console.log(`Realtime enabled for ${tableName}`);
+    return channel;
   } catch (error) {
     console.error(`Error enabling realtime for ${tableName}:`, error);
+    return null;
   }
 };
 
-// Enable realtime for key tables when the client initializes
+// Initialize realtime for key tables
 if (typeof window !== 'undefined') {
-  enableRealtimeForTable('media_sessions');
-  enableRealtimeForTable('messages');
-  enableRealtimeForTable('room_members');
+  Promise.all([
+    enableRealtimeForTable('media_sessions'),
+    enableRealtimeForTable('messages'),
+    enableRealtimeForTable('room_members')
+  ]).then(() => {
+    console.log('All realtime subscriptions initialized');
+  }).catch((error) => {
+    console.error('Error initializing realtime subscriptions:', error);
+  });
 }

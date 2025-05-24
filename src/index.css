@@ -114,3 +114,16 @@
 ::-webkit-scrollbar-thumb {
   @apply bg-synqup-purple/60 rounded-full hover:bg-synqup-purple transition-colors;
 }
+
+/* Ensure chat messages are visible */
+.chat-message {
+  color: inherit !important;
+}
+
+.chat-message.user-message {
+  color: white !important;
+}
+
+.chat-message.other-message {
+  color: hsl(var(--foreground)) !important;
+}

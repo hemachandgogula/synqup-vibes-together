@@ -479,7 +479,7 @@ const Room = () => {
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-7xl mx-auto">
         <div className="mb-6 flex justify-between items-center">
           <Button 
             variant="ghost" 
@@ -521,13 +521,13 @@ const Room = () => {
           </div>
         </div>
 
-        <h1 className="text-3xl font-bold mb-8">{room?.name}</h1>
+        <h1 className="text-3xl font-bold mb-8 text-foreground">{room?.name}</h1>
         
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           {/* Media Player Section */}
-          <div className="lg:col-span-2">
-            <Card className="p-4 mb-4">
-              <h2 className="text-xl font-semibold mb-4">Media Player</h2>
+          <div className="xl:col-span-3">
+            <Card className="p-6 mb-4">
+              <h2 className="text-xl font-semibold mb-4 text-foreground">Media Player</h2>
               
               {isOwner ? (
                 <form onSubmit={handleYoutubeSubmit} className="flex gap-2 mb-4">
@@ -537,7 +537,7 @@ const Room = () => {
                     placeholder="Enter YouTube URL"
                     className="flex-1"
                   />
-                  <Button type="submit">
+                  <Button type="submit" className="bg-synqup-purple hover:bg-synqup-dark-purple">
                     Play for Everyone
                   </Button>
                 </form>
@@ -547,7 +547,7 @@ const Room = () => {
                 </div>
               )}
               
-              <div className="aspect-video bg-black relative rounded-md overflow-hidden">
+              <div className="aspect-video bg-black relative rounded-lg overflow-hidden border">
                 {currentMediaSession?.media_url ? (
                   <iframe
                     ref={playerRef}
@@ -577,39 +577,43 @@ const Room = () => {
           </div>
           
           {/* Chat Section */}
-          <div className="lg:col-span-1">
+          <div className="xl:col-span-1">
             <Card className="p-4 h-[600px] flex flex-col">
-              <h2 className="text-xl font-semibold mb-4">Chat</h2>
+              <h2 className="text-xl font-semibold mb-4 text-foreground">Chat</h2>
               
-              <div className="flex-1 overflow-auto mb-4">
-                <div className="space-y-4">
-                  {messages.length === 0 ? (
-                    <div className="text-center text-gray-400 py-4">
-                      No messages yet
-                    </div>
-                  ) : (
-                    messages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`p-3 rounded-lg max-w-[80%] ${
-                          message.user_id === user?.id
-                            ? 'ml-auto bg-purple-600 text-white'
-                            : 'bg-gray-100 dark:bg-gray-800'
-                        }`}
-                      >
-                        <div className="text-xs opacity-70 mb-1">
-                          {message.user_id === user?.id
-                            ? 'You'
-                            : message.user_email || 'User'}
-                          {' · '}
-                          {formatTime(message.created_at)}
-                        </div>
-                        <div>{message.content}</div>
+              <div className="flex-1 overflow-auto mb-4 space-y-3">
+                {messages.length === 0 ? (
+                  <div className="text-center text-muted-foreground py-4">
+                    No messages yet
+                  </div>
+                ) : (
+                  messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`p-3 rounded-lg max-w-[85%] break-words ${
+                        message.user_id === user?.id
+                          ? 'ml-auto bg-synqup-purple text-white'
+                          : 'bg-muted text-foreground'
+                      }`}
+                    >
+                      <div className={`text-xs mb-1 ${
+                        message.user_id === user?.id
+                          ? 'text-white/80'
+                          : 'text-muted-foreground'
+                      }`}>
+                        {message.user_id === user?.id
+                          ? 'You'
+                          : message.user_email || 'User'}
+                        {' · '}
+                        {formatTime(message.created_at)}
                       </div>
-                    ))
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
+                      <div className={message.user_id === user?.id ? 'text-white' : 'text-foreground'}>
+                        {message.content}
+                      </div>
+                    </div>
+                  ))
+                )}
+                <div ref={messagesEndRef} />
               </div>
               
               <form onSubmit={handleSendMessage} className="flex gap-2">
@@ -618,7 +622,7 @@ const Room = () => {
                   onChange={(e) => setNewMessage(e.target.value)}
                   placeholder="Type a message..."
                   disabled={sendingMessage}
-                  className="flex-1 min-h-[60px] resize-none"
+                  className="flex-1 min-h-[60px] max-h-[120px] resize-none text-foreground placeholder:text-muted-foreground"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -626,7 +630,12 @@ const Room = () => {
                     }
                   }}
                 />
-                <Button type="submit" disabled={sendingMessage} size="icon" className="h-[60px]">
+                <Button 
+                  type="submit" 
+                  disabled={sendingMessage || !newMessage.trim()} 
+                  size="icon" 
+                  className="h-[60px] bg-synqup-purple hover:bg-synqup-dark-purple"
+                >
                   <Send className="h-4 w-4" />
                 </Button>
               </form>

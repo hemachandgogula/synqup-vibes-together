@@ -6,23 +6,89 @@ import type { Database } from './types';
 const SUPABASE_URL = "https://itrjjjrwthdhmeysgjlm.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml0cmpqanJ3dGhkaG1leXNnamxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2MDY3MjYsImV4cCI6MjA2MTE4MjcyNn0.vwTYvDOllmfoBmow8-2ltytkd0vipMIJtsPqABC7Xfo";
 
-// Import the supabase client like this:
-// import { supabase } from "@/integrations/supabase/client";
-
-// Initialize the Supabase client with better persistence configuration
+// Initialize the Supabase client with enhanced persistence and stability
 export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
-    storage: typeof window !== 'undefined' ? localStorage : undefined
+    storage: typeof window !== 'undefined' ? {
+      getItem: (key) => {
+        try {
+          return localStorage.getItem(key);
+        } catch (e) {
+          console.warn('Could not access localStorage:', e);
+          return null;
+        }
+      },
+      setItem: (key, value) => {
+        try {
+          localStorage.setItem(key, value);
+        } catch (e) {
+          console.warn('Could not write to localStorage:', e);
+        }
+      },
+      removeItem: (key) => {
+        try {
+          localStorage.removeItem(key);
+        } catch (e) {
+          console.warn('Could not remove from localStorage:', e);
+        }
+      }
+    } : undefined,
+    flowType: 'pkce',
+    debug: process.env.NODE_ENV === 'development'
   },
   realtime: {
     params: {
-      eventsPerSecond: 10
+      eventsPerSecond: 20,
+      timeout: 30000,
+      heartbeatIntervalMs: 15000
+    }
+  },
+  global: {
+    headers: {
+      'X-Client-Info': 'supabase-js-web'
     }
   }
 });
 
-// Set up the Supabase realtime client
-supabase.realtime.setAuth(SUPABASE_PUBLISHABLE_KEY);
+// Enhanced session recovery and stability
+if (typeof window !== 'undefined') {
+  let isOnline = navigator.onLine;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
+
+  // Handle connection recovery when the tab becomes visible
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isOnline) {
+      console.log('Tab became visible, checking session...');
+      supabase.auth.getSession().then(({ data: { session }, error }) => {
+        if (error) {
+          console.error('Session check error:', error);
+        } else if (session) {
+          console.log('Session verified after tab visibility change');
+        }
+      });
+    }
+  });
+
+  // Handle online/offline events with retry logic
+  window.addEventListener('online', () => {
+    console.log('Connection restored');
+    isOnline = true;
+    reconnectAttempts = 0;
+    
+    // Attempt to refresh session when coming back online
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        console.log('Session restored after reconnection');
+      }
+    });
+  });
+
+  window.addEventListener('offline', () => {
+    console.log('Connection lost');
+    isOnline = false;
+  });
+}

@@ -27,9 +27,9 @@ const Room = () => {
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = useRef(null);
-  const channelRef = useRef(null);
-  const mediaChannelRef = useRef(null);
+  const channelsRef = useRef({});
   const playerRef = useRef(null);
+  const lastMediaUpdateRef = useRef(null);
 
   // Initialize room
   useEffect(() => {
@@ -140,9 +140,14 @@ const Room = () => {
     // Clean up existing connections
     cleanup();
 
-    // Messages channel
+    // Messages channel with proper filter
     const messagesChannel = supabase
-      .channel(`room-messages-${roomId}`)
+      .channel(`messages_${roomId}`, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: user.id }
+        }
+      })
       .on(
         'postgres_changes',
         {
@@ -152,7 +157,7 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         async (payload) => {
-          console.log('New message received:', payload);
+          console.log('New message received via realtime:', payload);
           if (payload.new && payload.new.user_id !== user.id) {
             // Get user info for the message
             const { data: profileData } = await supabase
@@ -163,10 +168,15 @@ const Room = () => {
               
             const messageWithUser = {
               ...payload.new,
-              user_email: profileData?.username || 'Unknown user'
+              profiles: { username: profileData?.username || 'Unknown user' }
             };
             
-            setMessages(prev => [...prev, messageWithUser]);
+            setMessages(prev => {
+              // Prevent duplicates
+              const exists = prev.some(msg => msg.id === messageWithUser.id);
+              if (exists) return prev;
+              return [...prev, messageWithUser];
+            });
           }
         }
       )
@@ -174,9 +184,14 @@ const Room = () => {
         console.log('Messages channel status:', status);
       });
 
-    // Media synchronization channel
+    // Media synchronization channel with conflict resolution
     const mediaChannel = supabase
-      .channel(`room-media-${roomId}`)
+      .channel(`media_${roomId}`, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: user.id }
+        }
+      })
       .on(
         'postgres_changes',
         {
@@ -186,20 +201,29 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
-          console.log('Media session update:', payload);
+          console.log('Media session update via realtime:', payload);
           if (payload.new) {
-            setCurrentMediaSession(payload.new);
+            const newSession = payload.new;
             
-            // Sync video for non-owners
-            if (!isOwner && payload.new.media_url !== youtubeUrl) {
-              console.log('Syncing video to:', payload.new.media_url);
-              setYoutubeUrl(payload.new.media_url);
+            // Prevent infinite loops and conflicts
+            if (lastMediaUpdateRef.current === newSession.updated_at) {
+              console.log('Ignoring duplicate media update');
+              return;
+            }
+            
+            lastMediaUpdateRef.current = newSession.updated_at;
+            setCurrentMediaSession(newSession);
+            
+            // Sync video for non-owners only if URL changed
+            if (!isOwner && newSession.media_url !== youtubeUrl) {
+              console.log('Syncing video to:', newSession.media_url);
+              setYoutubeUrl(newSession.media_url);
               
               // Force iframe reload for sync
               setTimeout(() => {
                 const iframe = playerRef.current;
-                if (iframe && payload.new.media_url) {
-                  iframe.src = payload.new.media_url;
+                if (iframe && newSession.media_url) {
+                  iframe.src = newSession.media_url;
                 }
               }, 100);
               
@@ -212,22 +236,23 @@ const Room = () => {
         console.log('Media channel status:', status);
       });
 
-    channelRef.current = messagesChannel;
-    mediaChannelRef.current = mediaChannel;
+    // Store channel references for cleanup
+    channelsRef.current = {
+      messages: messagesChannel,
+      media: mediaChannel
+    };
   };
 
   const cleanup = () => {
     console.log('Cleaning up real-time connections');
     
-    if (channelRef.current) {
-      supabase.removeChannel(channelRef.current);
-      channelRef.current = null;
-    }
+    Object.values(channelsRef.current).forEach(channel => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    });
     
-    if (mediaChannelRef.current) {
-      supabase.removeChannel(mediaChannelRef.current);
-      mediaChannelRef.current = null;
-    }
+    channelsRef.current = {};
   };
 
   const fetchCurrentMediaSession = async () => {
@@ -243,6 +268,7 @@ const Room = () => {
       if (data) {
         setCurrentMediaSession(data);
         setYoutubeUrl(data.media_url);
+        lastMediaUpdateRef.current = data.updated_at;
       }
     } catch (error) {
       console.error('Error fetching media session:', error);
@@ -268,15 +294,7 @@ const Room = () => {
         return;
       }
 
-      const formattedMessages = data.map((msg) => ({
-        id: msg.id,
-        content: msg.content,
-        created_at: msg.created_at,
-        user_id: msg.user_id,
-        user_email: msg.profiles?.username || 'Unknown user',
-      }));
-
-      setMessages(formattedMessages);
+      setMessages(data || []);
     } catch (error) {
       console.error('Error in fetchMessages:', error);
     }
@@ -286,21 +304,38 @@ const Room = () => {
     e.preventDefault();
     if (!newMessage.trim() || !user || !roomId || sendingMessage) return;
 
+    const messageContent = newMessage.trim();
     setSendingMessage(true);
+    
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('messages')
         .insert([{
           room_id: roomId,
           user_id: user.id,
-          content: newMessage.trim(),
-        }]);
+          content: messageContent,
+        }])
+        .select(`
+          id,
+          content,
+          created_at,
+          user_id,
+          profiles:user_id (username)
+        `)
+        .single();
 
       if (error) {
         console.error('Error sending message:', error);
         toast.error('Failed to send message');
         return;
       }
+
+      // Add message immediately to local state
+      setMessages(prev => {
+        const exists = prev.some(msg => msg.id === data.id);
+        if (exists) return prev;
+        return [...prev, data];
+      });
 
       setNewMessage('');
     } catch (error) {
@@ -338,11 +373,6 @@ const Room = () => {
         toast.error('Failed to update media');
       } else {
         toast.success('Video updated for all viewers');
-        setCurrentMediaSession({
-          media_url: embedUrl,
-          is_playing: true,
-          current_position: 0
-        });
       }
     } catch (error) {
       console.error('Error in handleYoutubeSubmit:', error);
@@ -524,7 +554,7 @@ const Room = () => {
                       }`}>
                         {message.user_id === user?.id
                           ? 'You'
-                          : message.user_email}
+                          : message.profiles?.username || 'Unknown user'}
                         {' · '}
                         {formatTime(message.created_at)}
                       </div>

@@ -3,7 +3,6 @@ import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
-import { Separator } from '@/components/ui/separator';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
@@ -12,7 +11,9 @@ interface RoomMember {
   user_id: string;
   joined_at: string;
   role: string;
-  username?: string;
+  profiles?: {
+    username: string | null;
+  };
 }
 
 interface RoomMembersProps {
@@ -30,7 +31,12 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
     
     // Set up real-time subscription for members
     const channel = supabase
-      .channel(`room-members-${roomId}`)
+      .channel(`members_${roomId}`, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: currentUserId }
+        }
+      })
       .on(
         'postgres_changes',
         {
@@ -40,15 +46,18 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
           filter: `room_id=eq.${roomId}`,
         },
         () => {
+          console.log('Room members changed, refreshing...');
           fetchMembers();
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Members channel status:', status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [roomId]);
+  }, [roomId, currentUserId]);
 
   const fetchMembers = async () => {
     try {
@@ -59,20 +68,15 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
           *,
           profiles:user_id (username)
         `)
-        .eq('room_id', roomId);
+        .eq('room_id', roomId)
+        .order('joined_at', { ascending: false });
 
       if (error) {
         console.error('Error fetching members:', error);
         return;
       }
 
-      // Format the members with username
-      const formattedMembers = data.map((member: any) => ({
-        ...member,
-        username: member.profiles?.username || 'Unknown user'
-      }));
-
-      setMembers(formattedMembers);
+      setMembers(data || []);
     } catch (error) {
       console.error('Error:', error);
     } finally {
@@ -96,7 +100,6 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
       }
 
       toast.success('Member removed successfully');
-      fetchMembers();
     } catch (error) {
       console.error('Error:', error);
       toast.error('An error occurred');
@@ -104,7 +107,11 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
   };
 
   if (loading) {
-    return <div className="text-center p-4">Loading members...</div>;
+    return (
+      <Card className="p-4">
+        <div className="text-center text-muted-foreground">Loading members...</div>
+      </Card>
+    );
   }
 
   return (
@@ -115,25 +122,30 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
           <div className="text-center text-muted-foreground">No members</div>
         ) : (
           members.map((member) => (
-            <div key={member.id} className="flex items-center justify-between">
-              <div className="flex items-center">
-                <span className="text-sm">
-                  {member.username}
+            <div key={member.id} className="flex items-center justify-between p-2 rounded border">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
+                  {(member.profiles?.username || 'U').charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <span className="text-sm font-medium">
+                    {member.profiles?.username || 'Unknown user'}
+                  </span>
                   {member.role === 'owner' && 
-                    <span className="ml-2 text-xs bg-synqup-purple text-white px-2 py-0.5 rounded-full">
+                    <span className="ml-2 text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full">
                       Owner
                     </span>
                   }
                   {member.user_id === currentUserId && 
                     <span className="ml-2 text-xs text-muted-foreground">(You)</span>
                   }
-                </span>
+                </div>
               </div>
               {isOwner && member.user_id !== currentUserId && (
                 <Button 
                   variant="ghost" 
                   size="icon" 
-                  className="h-8 w-8" 
+                  className="h-8 w-8 text-destructive hover:text-destructive" 
                   onClick={() => removeMember(member.id, member.user_id)}
                 >
                   <X className="h-4 w-4" />

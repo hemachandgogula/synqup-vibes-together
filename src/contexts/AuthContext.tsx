@@ -18,37 +18,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
+    let isMounted = true;
+
     // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+      async (event, session) => {
         console.log('Auth state change:', event, session?.user?.email);
+        
+        if (!isMounted) return;
+
         setSession(session);
         setUser(session?.user ?? null);
         
-        // Only navigate on explicit sign in/out events, not token refreshes
-        if (event === 'SIGNED_IN' && !location.pathname.includes('/room') && !location.pathname.includes('/dashboard')) {
-          navigate('/dashboard');
-        } else if (event === 'SIGNED_OUT') {
-          navigate('/login');
+        // Only navigate on explicit sign in/out events, NOT on token refreshes
+        if (initialLoadComplete) {
+          if (event === 'SIGNED_IN') {
+            // Only navigate if not already in a protected route
+            if (!location.pathname.includes('/room') && !location.pathname.includes('/dashboard')) {
+              navigate('/dashboard');
+            }
+          } else if (event === 'SIGNED_OUT') {
+            navigate('/login');
+          }
+          // Explicitly ignore TOKEN_REFRESHED to prevent tab switching logout
         }
-        // Don't navigate on TOKEN_REFRESHED to prevent tab switching issues
       }
     );
 
     // Check for existing session
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isMounted) return;
+      
       console.log('Initial session check:', session?.user?.email);
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);
+      setInitialLoadComplete(true);
     });
 
-    return () => subscription.unsubscribe();
-  }, [navigate, location.pathname]);
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [navigate, location.pathname, initialLoadComplete]);
 
   const signUp = async (email: string, password: string) => {
     const { error } = await supabase.auth.signUp({

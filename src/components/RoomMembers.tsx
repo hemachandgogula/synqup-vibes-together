@@ -13,7 +13,7 @@ interface RoomMember {
   role: string;
   profiles?: {
     username: string | null;
-  };
+  } | null;
 }
 
 interface RoomMembersProps {
@@ -65,14 +65,38 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
       const { data, error } = await supabase
         .from('room_members')
         .select(`
-          *,
-          profiles:user_id (username)
+          id,
+          user_id,
+          joined_at,
+          role,
+          profiles!room_members_user_id_fkey (
+            username
+          )
         `)
         .eq('room_id', roomId)
         .order('joined_at', { ascending: false });
 
       if (error) {
         console.error('Error fetching members:', error);
+        // Fallback query without profiles if the foreign key doesn't work
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('room_members')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('joined_at', { ascending: false });
+
+        if (fallbackError) {
+          console.error('Fallback query also failed:', fallbackError);
+          return;
+        }
+
+        // Transform data to match expected format
+        const transformedData = fallbackData?.map(member => ({
+          ...member,
+          profiles: null
+        })) || [];
+
+        setMembers(transformedData);
         return;
       }
 

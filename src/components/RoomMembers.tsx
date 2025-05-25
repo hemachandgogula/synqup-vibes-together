@@ -63,59 +63,52 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
     try {
       setLoading(true);
       
-      // First try to get members with profiles using explicit join
-      const { data, error } = await supabase
+      // Get members and then fetch profiles separately to avoid join issues
+      const { data: membersData, error: membersError } = await supabase
         .from('room_members')
-        .select(`
-          id,
-          user_id,
-          joined_at,
-          role,
-          profiles (
-            username
-          )
-        `)
+        .select('id, user_id, joined_at, role')
         .eq('room_id', roomId)
         .order('joined_at', { ascending: false });
 
-      if (error) {
-        console.error('Error fetching members with profiles:', error);
-        
-        // Fallback: get members without profiles and then fetch profiles separately
-        const { data: membersData, error: membersError } = await supabase
-          .from('room_members')
-          .select('id, user_id, joined_at, role')
-          .eq('room_id', roomId)
-          .order('joined_at', { ascending: false });
-
-        if (membersError) {
-          console.error('Error fetching members:', membersError);
-          toast.error('Failed to load room members');
-          return;
-        }
-
-        // Transform members data to include null profiles
-        const transformedMembers: RoomMember[] = (membersData || []).map(member => ({
-          ...member,
-          profiles: null
-        }));
-
-        setMembers(transformedMembers);
+      if (membersError) {
+        console.error('Error fetching members:', membersError);
+        toast.error('Failed to load room members');
         return;
       }
 
-      // Transform the data to ensure it matches our interface
-      const transformedMembers: RoomMember[] = (data || []).map(member => ({
-        id: member.id,
-        user_id: member.user_id,
-        joined_at: member.joined_at,
-        role: member.role,
-        profiles: member.profiles ? {
-          username: member.profiles.username
-        } : null
-      }));
+      if (!membersData || membersData.length === 0) {
+        setMembers([]);
+        return;
+      }
 
-      setMembers(transformedMembers);
+      // Get profiles for all users
+      const userIds = membersData.map(member => member.user_id);
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .in('id', userIds);
+
+      if (profilesError) {
+        console.error('Error fetching profiles:', profilesError);
+        // Still show members even if profiles fail
+        const membersWithoutProfiles: RoomMember[] = membersData.map(member => ({
+          ...member,
+          profiles: null
+        }));
+        setMembers(membersWithoutProfiles);
+        return;
+      }
+
+      // Combine members with their profiles
+      const membersWithProfiles: RoomMember[] = membersData.map(member => {
+        const profile = profilesData?.find(p => p.id === member.user_id);
+        return {
+          ...member,
+          profiles: profile ? { username: profile.username } : null
+        };
+      });
+
+      setMembers(membersWithProfiles);
     } catch (error) {
       console.error('Unexpected error:', error);
       toast.error('An unexpected error occurred');

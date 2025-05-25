@@ -62,6 +62,8 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
   const fetchMembers = async () => {
     try {
       setLoading(true);
+      
+      // First try to get members with profiles using explicit join
       const { data, error } = await supabase
         .from('room_members')
         .select(`
@@ -69,7 +71,7 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
           user_id,
           joined_at,
           role,
-          profiles!room_members_user_id_fkey (
+          profiles (
             username
           )
         `)
@@ -77,32 +79,46 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
         .order('joined_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching members:', error);
-        // Fallback query without profiles if the foreign key doesn't work
-        const { data: fallbackData, error: fallbackError } = await supabase
+        console.error('Error fetching members with profiles:', error);
+        
+        // Fallback: get members without profiles and then fetch profiles separately
+        const { data: membersData, error: membersError } = await supabase
           .from('room_members')
-          .select('*')
+          .select('id, user_id, joined_at, role')
           .eq('room_id', roomId)
           .order('joined_at', { ascending: false });
 
-        if (fallbackError) {
-          console.error('Fallback query also failed:', fallbackError);
+        if (membersError) {
+          console.error('Error fetching members:', membersError);
+          toast.error('Failed to load room members');
           return;
         }
 
-        // Transform data to match expected format
-        const transformedData = fallbackData?.map(member => ({
+        // Transform members data to include null profiles
+        const transformedMembers: RoomMember[] = (membersData || []).map(member => ({
           ...member,
           profiles: null
-        })) || [];
+        }));
 
-        setMembers(transformedData);
+        setMembers(transformedMembers);
         return;
       }
 
-      setMembers(data || []);
+      // Transform the data to ensure it matches our interface
+      const transformedMembers: RoomMember[] = (data || []).map(member => ({
+        id: member.id,
+        user_id: member.user_id,
+        joined_at: member.joined_at,
+        role: member.role,
+        profiles: member.profiles ? {
+          username: member.profiles.username
+        } : null
+      }));
+
+      setMembers(transformedMembers);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Unexpected error:', error);
+      toast.error('An unexpected error occurred');
     } finally {
       setLoading(false);
     }

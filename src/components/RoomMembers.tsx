@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client'; // Use the TS file for correct types!
 import { toast } from 'sonner';
 
 interface RoomMember {
@@ -55,11 +55,19 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
   const fetchMembers = async () => {
     try {
       setLoading(true);
+      // Nested select for user profile
       const { data: membersData, error: membersError } = await supabase
         .from('room_members')
-        .select('id, user_id, joined_at, role')
+        .select(`
+          id,
+          user_id,
+          joined_at,
+          role,
+          profiles:user_id (username)
+        `)
         .eq('room_id', roomId)
         .order('joined_at', { ascending: false });
+
       if (membersError) {
         toast.error('Failed to load room members');
         setMembers([]);
@@ -69,27 +77,16 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
         setMembers([]);
         return;
       }
-      const userIds = membersData.map(member => member.user_id);
-      const { data: profilesData, error: profilesError } = await supabase
-        .from('profiles')
-        .select('id, username')
-        .in('id', userIds);
-      if (profilesError) {
-        const membersWithoutProfiles: RoomMember[] = membersData.map(member => ({
-          ...member,
-          profiles: null
-        }));
-        setMembers(membersWithoutProfiles);
-        return;
-      }
-      const membersWithProfiles: RoomMember[] = membersData.map(member => {
-        const profile = profilesData?.find((p: any) => p.id === member.user_id);
-        return {
-          ...member,
-          profiles: profile ? { username: profile.username } : null
-        };
-      });
-      setMembers(membersWithProfiles);
+      // membersData is now strongly typed and contains profiles
+      setMembers(
+        membersData.map((m: any) => ({
+          id: m.id,
+          user_id: m.user_id,
+          joined_at: m.joined_at,
+          role: m.role,
+          profiles: m.profiles ? { username: m.profiles.username } : null
+        }))
+      );
     } catch (error) {
       toast.error('An unexpected error occurred');
       setMembers([]);

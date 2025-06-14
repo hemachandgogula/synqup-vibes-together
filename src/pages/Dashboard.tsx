@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Users, Plus, LogOut } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client'; // Must import from TS client!
 import { toast } from 'sonner';
 
 const Dashboard = () => {
@@ -28,26 +28,23 @@ const Dashboard = () => {
     
     try {
       setLoading(true);
-      
-      // Fetch rooms where user is a member
+      // Get rooms where user is a member, and "rooms(*)" gets the related room
       const { data: memberRooms, error: memberError } = await supabase
         .from('room_members')
-        .select('room_id, role, rooms(*)')
+        .select('room_id, role, rooms(*)') // rooms(*) for all columns
         .eq('user_id', user.id);
         
       if (memberError) throw memberError;
       
-      console.log('User rooms:', memberRooms);
-      
       if (memberRooms) {
-        const formattedRooms = memberRooms.map(item => ({
-          ...item.rooms,
+        // Avoid undefined: fallback for missing room relation
+        const formattedRooms = memberRooms.map((item: any) => ({
+          ...(item.rooms || {}), // all room columns
           role: item.role
         }));
         setUserRooms(formattedRooms);
       }
     } catch (error) {
-      console.error('Error fetching rooms:', error);
       toast.error('Failed to load your rooms');
     } finally {
       setLoading(false);
@@ -60,7 +57,6 @@ const Dashboard = () => {
       toast.success('Logged out successfully');
       navigate('/login');
     } catch (error) {
-      console.error('Error logging out:', error);
       toast.error('Failed to log out');
     }
   };

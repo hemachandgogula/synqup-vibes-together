@@ -8,7 +8,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Card } from '@/components/ui/card';
 import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client'; // Use TS client!
 import { toast } from 'sonner';
 
 const CreateTeam = () => {
@@ -53,15 +53,19 @@ const CreateTeam = () => {
           },
         ])
         .select()
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
 
-      console.log('Room created:', room);
+      if (!room) {
+        toast.error('Failed to create team');
+        setLoading(false);
+        return;
+      }
+
       toast.success('Team created successfully!');
       navigate(`/room?id=${room.id}`);
     } catch (error: any) {
-      console.error('Error creating team:', error);
       toast.error(error.message || 'Failed to create team');
     } finally {
       setLoading(false);

@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client'; // Use TS client!
 import { toast } from 'sonner';
 
 const JoinTeam = () => {
@@ -37,19 +37,15 @@ const JoinTeam = () => {
 
     setLoading(true);
     try {
-      console.log('Joining team with code:', code.trim());
       const { data: room, error: roomError } = await supabase
         .from('rooms')
         .select('id')
         .eq('room_code', code.trim())
-        .single();
+        .maybeSingle();
 
-      if (roomError) {
-        console.error('Room error:', roomError);
+      if (roomError || !room) {
         throw new Error('Invalid team code');
       }
-
-      console.log('Found room:', room);
 
       // Check if user is already a member
       const { data: existingMember, error: memberCheckError } = await supabase
@@ -57,11 +53,12 @@ const JoinTeam = () => {
         .select('id')
         .eq('room_id', room.id)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
         
       if (existingMember) {
         toast.info("You're already a member of this team");
         navigate(`/room?id=${room.id}`);
+        setLoading(false);
         return;
       }
 
@@ -77,14 +74,12 @@ const JoinTeam = () => {
         ]);
 
       if (memberError) {
-        console.error('Member error:', memberError);
         throw memberError;
       }
 
       toast.success('Successfully joined the team!');
       navigate(`/room?id=${room.id}`);
     } catch (error: any) {
-      console.error('Error joining team:', error);
       toast.error(error.message || 'Invalid team code or error joining team');
     } finally {
       setLoading(false);

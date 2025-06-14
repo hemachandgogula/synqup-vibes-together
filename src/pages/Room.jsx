@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
@@ -31,17 +30,20 @@ const Room = () => {
   const playerRef = useRef(null);
   const lastMediaUpdateRef = useRef(null);
 
+  // New: Separate status for membership state
+  const [membership, setMembership] = useState(null);
+
   // Initialize room
   useEffect(() => {
     if (!user || !roomId) {
       navigate('/dashboard');
       return;
     }
-
     initializeRoom();
-    
     return () => {
       cleanup();
+      setMembership(null);
+      setIsOwner(false);
     };
   }, [user, roomId, navigate]);
 
@@ -50,48 +52,7 @@ const Room = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const initializeRoom = async () => {
-    try {
-      setLoading(true);
-      console.log("Initializing room:", roomId);
-      
-      // Fetch room details
-      const { data: roomData, error: roomError } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('id', roomId)
-        .single();
-
-      if (roomError) {
-        console.error('Error fetching room:', roomError);
-        toast.error('Could not find room');
-        navigate('/dashboard');
-        return;
-      }
-
-      setRoom(roomData);
-
-      // Check/ensure membership
-      await ensureMembership();
-
-      // Load initial data
-      await Promise.all([
-        fetchCurrentMediaSession(),
-        fetchMessages()
-      ]);
-
-      // Setup real-time connections
-      setupRealtimeConnections();
-
-    } catch (error) {
-      console.error('Error initializing room:', error);
-      toast.error('Failed to load room');
-      navigate('/dashboard');
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Refactored: membership fetching
   const ensureMembership = async () => {
     try {
       const { data: memberData, error: memberError } = await supabase
@@ -106,27 +67,29 @@ const Room = () => {
         throw memberError;
       }
 
+      // If not a member, insert and refetch for consistency
       if (!memberData) {
-        // Join the room
         const { error: joinError } = await supabase
           .from('room_members')
-          .insert([{ 
-            room_id: roomId, 
-            user_id: user.id,
-            role: 'member'
-          }]);
-          
+          .insert([{ room_id: roomId, user_id: user.id, role: 'member' }]);
         if (joinError) {
           console.error('Error joining room:', joinError);
           throw new Error('Could not join room');
         }
-        
+        // After insert, fetch again to get full member object
+        const { data: refreshed, error: refreshErr } = await supabase
+          .from('room_members')
+          .select('*')
+          .eq('room_id', roomId)
+          .eq('user_id', user.id)
+          .maybeSingle();
+        if (refreshErr) throw refreshErr;
+        setMembership(refreshed);
+        setIsOwner(refreshed.role === 'owner');
         toast.success('Joined the room');
       } else {
-        // Check if user is owner
-        if (memberData.role === 'owner') {
-          setIsOwner(true);
-        }
+        setMembership(memberData);
+        setIsOwner(memberData.role === 'owner');
       }
     } catch (error) {
       console.error('Error ensuring membership:', error);
@@ -134,13 +97,50 @@ const Room = () => {
     }
   };
 
-  const setupRealtimeConnections = () => {
-    console.log("Setting up real-time connections for room:", roomId);
-    
-    // Clean up existing connections
-    cleanup();
+  // Main boot logic
+  const initializeRoom = async () => {
+    try {
+      setLoading(true);
+      setMembership(null);
+      setIsOwner(false);
 
-    // Messages channel with proper filter
+      // Fetch room details
+      const { data: roomData, error: roomError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', roomId)
+        .single();
+
+      if (roomError) {
+        console.error('Error fetching room:', roomError);
+        toast.error('Could not find room');
+        navigate('/dashboard');
+        return;
+      }
+      setRoom(roomData);
+
+      // Membership
+      await ensureMembership();
+
+      // Load initial data
+      await Promise.all([
+        fetchCurrentMediaSession(),
+        fetchMessages()
+      ]);
+      setupRealtimeConnections();
+    } catch (error) {
+      console.error('Error initializing room:', error);
+      toast.error('Failed to load room');
+      navigate('/dashboard');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Realtime setup, robust
+  const setupRealtimeConnections = () => {
+    cleanup();
+    // Messages channel
     const messagesChannel = supabase
       .channel(`messages_${roomId}`, {
         config: {
@@ -157,22 +157,27 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         async (payload) => {
-          console.log('New message received via realtime:', payload);
+          // Ignore message if already present (prevents double)
           if (payload.new && payload.new.user_id !== user.id) {
-            // Get user info for the message
-            const { data: profileData } = await supabase
-              .from('profiles')
-              .select('username')
-              .eq('id', payload.new.user_id)
-              .single();
-              
+            // Fetch username only if not in state (otherwise fallback)
+            let username = 'Unknown user';
+            const match = messages.find(msg => msg.id === payload.new.id);
+            if (match && match.profiles?.username) {
+              username = match.profiles.username;
+            } else {
+              // Only query if not already present
+              const { data: profileData } = await supabase
+                .from('profiles')
+                .select('username')
+                .eq('id', payload.new.user_id)
+                .maybeSingle();
+              if (profileData?.username) username = profileData.username;
+            }
             const messageWithUser = {
               ...payload.new,
-              profiles: { username: profileData?.username || 'Unknown user' }
+              profiles: { username }
             };
-            
             setMessages(prev => {
-              // Prevent duplicates
               const exists = prev.some(msg => msg.id === messageWithUser.id);
               if (exists) return prev;
               return [...prev, messageWithUser];
@@ -184,7 +189,7 @@ const Room = () => {
         console.log('Messages channel status:', status);
       });
 
-    // Media synchronization channel with conflict resolution
+    // Media channel
     const mediaChannel = supabase
       .channel(`media_${roomId}`, {
         config: {
@@ -201,32 +206,19 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
-          console.log('Media session update via realtime:', payload);
           if (payload.new) {
             const newSession = payload.new;
-            
-            // Prevent infinite loops and conflicts
-            if (lastMediaUpdateRef.current === newSession.updated_at) {
-              console.log('Ignoring duplicate media update');
-              return;
-            }
-            
+            if (lastMediaUpdateRef.current === newSession.updated_at) return;
             lastMediaUpdateRef.current = newSession.updated_at;
             setCurrentMediaSession(newSession);
-            
-            // Sync video for non-owners only if URL changed
             if (!isOwner && newSession.media_url !== youtubeUrl) {
-              console.log('Syncing video to:', newSession.media_url);
               setYoutubeUrl(newSession.media_url);
-              
-              // Force iframe reload for sync
               setTimeout(() => {
                 const iframe = playerRef.current;
                 if (iframe && newSession.media_url) {
                   iframe.src = newSession.media_url;
                 }
               }, 100);
-              
               toast.success('Video synced by room owner');
             }
           }
@@ -236,45 +228,19 @@ const Room = () => {
         console.log('Media channel status:', status);
       });
 
-    // Store channel references for cleanup
-    channelsRef.current = {
-      messages: messagesChannel,
-      media: mediaChannel
-    };
+    channelsRef.current = { messages: messagesChannel, media: mediaChannel };
   };
 
   const cleanup = () => {
-    console.log('Cleaning up real-time connections');
-    
     Object.values(channelsRef.current).forEach(channel => {
       if (channel) {
         supabase.removeChannel(channel);
       }
     });
-    
     channelsRef.current = {};
   };
 
-  const fetchCurrentMediaSession = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('media_sessions')
-        .select('*')
-        .eq('room_id', roomId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-        
-      if (data) {
-        setCurrentMediaSession(data);
-        setYoutubeUrl(data.media_url);
-        lastMediaUpdateRef.current = data.updated_at;
-      }
-    } catch (error) {
-      console.error('Error fetching media session:', error);
-    }
-  };
-
+  // Enforce robust fetch
   const fetchMessages = async () => {
     try {
       const { data, error } = await supabase
@@ -293,7 +259,6 @@ const Room = () => {
         console.error('Error fetching messages:', error);
         return;
       }
-
       setMessages(data || []);
     } catch (error) {
       console.error('Error in fetchMessages:', error);
@@ -303,10 +268,8 @@ const Room = () => {
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !user || !roomId || sendingMessage) return;
-
     const messageContent = newMessage.trim();
     setSendingMessage(true);
-    
     try {
       const { data, error } = await supabase
         .from('messages')
@@ -325,21 +288,16 @@ const Room = () => {
         .single();
 
       if (error) {
-        console.error('Error sending message:', error);
         toast.error('Failed to send message');
         return;
       }
-
-      // Add message immediately to local state
       setMessages(prev => {
         const exists = prev.some(msg => msg.id === data.id);
         if (exists) return prev;
         return [...prev, data];
       });
-
       setNewMessage('');
     } catch (error) {
-      console.error('Error in handleSendMessage:', error);
       toast.error('Failed to send message');
     } finally {
       setSendingMessage(false);
@@ -519,10 +477,10 @@ const Room = () => {
             </Card>
             
             {showMembers && isOwner && (
-              <RoomMembers 
-                roomId={roomId || ''} 
-                currentUserId={user?.id || ''} 
-                isOwner={isOwner} 
+              <RoomMembers
+                roomId={roomId || ''}
+                currentUserId={user?.id || ''}
+                isOwner={isOwner}
               />
             )}
           </div>

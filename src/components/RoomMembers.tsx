@@ -28,14 +28,10 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
 
   useEffect(() => {
     fetchMembers();
-    
-    // Set up real-time subscription for members
+
     const channel = supabase
       .channel(`members_${roomId}`, {
-        config: {
-          broadcast: { self: false },
-          presence: { key: currentUserId }
-        }
+        config: { broadcast: { self: false }, presence: { key: currentUserId } }
       })
       .on(
         'postgres_changes',
@@ -46,13 +42,10 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
           filter: `room_id=eq.${roomId}`,
         },
         () => {
-          console.log('Room members changed, refreshing...');
           fetchMembers();
         }
       )
-      .subscribe((status) => {
-        console.log('Members channel status:', status);
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
@@ -62,35 +55,26 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
   const fetchMembers = async () => {
     try {
       setLoading(true);
-      
-      // Get members and then fetch profiles separately to avoid join issues
       const { data: membersData, error: membersError } = await supabase
         .from('room_members')
         .select('id, user_id, joined_at, role')
         .eq('room_id', roomId)
         .order('joined_at', { ascending: false });
-
       if (membersError) {
-        console.error('Error fetching members:', membersError);
         toast.error('Failed to load room members');
+        setMembers([]);
         return;
       }
-
       if (!membersData || membersData.length === 0) {
         setMembers([]);
         return;
       }
-
-      // Get profiles for all users
       const userIds = membersData.map(member => member.user_id);
       const { data: profilesData, error: profilesError } = await supabase
         .from('profiles')
         .select('id, username')
         .in('id', userIds);
-
       if (profilesError) {
-        console.error('Error fetching profiles:', profilesError);
-        // Still show members even if profiles fail
         const membersWithoutProfiles: RoomMember[] = membersData.map(member => ({
           ...member,
           profiles: null
@@ -98,20 +82,17 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
         setMembers(membersWithoutProfiles);
         return;
       }
-
-      // Combine members with their profiles
       const membersWithProfiles: RoomMember[] = membersData.map(member => {
-        const profile = profilesData?.find(p => p.id === member.user_id);
+        const profile = profilesData?.find((p: any) => p.id === member.user_id);
         return {
           ...member,
           profiles: profile ? { username: profile.username } : null
         };
       });
-
       setMembers(membersWithProfiles);
     } catch (error) {
-      console.error('Unexpected error:', error);
       toast.error('An unexpected error occurred');
+      setMembers([]);
     } finally {
       setLoading(false);
     }
@@ -119,22 +100,17 @@ const RoomMembers = ({ roomId, currentUserId, isOwner }: RoomMembersProps) => {
 
   const removeMember = async (memberId: string, userId: string) => {
     if (!isOwner || userId === currentUserId) return;
-    
     try {
       const { error } = await supabase
         .from('room_members')
         .delete()
         .eq('id', memberId);
-
       if (error) {
-        console.error('Error removing member:', error);
         toast.error('Failed to remove member');
         return;
       }
-
       toast.success('Member removed successfully');
     } catch (error) {
-      console.error('Error:', error);
       toast.error('An error occurred');
     }
   };

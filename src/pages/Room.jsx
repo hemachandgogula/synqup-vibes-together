@@ -20,7 +20,7 @@ const Room = () => {
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sendingMessage, setSendingMessage] = useState(false);
-  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [youtubeUrl, setYoutubeUrl] = useState(''); // Primarily for owner's input
   const [isOwner, setIsOwner] = useState(false);
   const [currentMediaSession, setCurrentMediaSession] = useState(null);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
@@ -28,7 +28,7 @@ const Room = () => {
   const messagesEndRef = useRef(null);
   const channelsRef = useRef({});
   const playerRef = useRef(null);
-  const lastMediaUpdateRef = useRef(null);
+  const lastMediaUpdateRef = useRef(null); // Stores the 'updated_at' of the last processed media session
 
   // New: Separate status for membership state
   const [membership, setMembership] = useState(null);
@@ -36,14 +36,27 @@ const Room = () => {
   // Initialize room
   useEffect(() => {
     if (!user || !roomId) {
-      navigate('/dashboard');
+      // If user is null, and we have a roomId, it might be a temp state during auth.
+      // However, ProtectedRoute should handle unauthenticated access.
+      // If no roomId, definitely navigate.
+      if (!roomId) {
+        navigate('/dashboard');
+      } else if (!user) {
+        // Potentially navigating away if user becomes null during tab focus session check
+        // This could be a source of the "refresh" if user state flickers.
+        // For now, we keep this behavior as it's tied to auth state.
+        navigate('/login'); // or /dashboard, consistent with ProtectedRoute
+      }
       return;
     }
     initializeRoom();
     return () => {
       cleanup();
+      // Reset states on component unmount or when dependencies change significantly
       setMembership(null);
       setIsOwner(false);
+      setCurrentMediaSession(null); 
+      setMessages([]);
     };
   }, [user, roomId, navigate]);
 
@@ -144,7 +157,7 @@ const Room = () => {
     const messagesChannel = supabase
       .channel(`messages_${roomId}`, {
         config: {
-          broadcast: { self: false },
+          broadcast: { self: false }, // Do not receive own messages via broadcast
           presence: { key: user.id }
         }
       })
@@ -157,15 +170,18 @@ const Room = () => {
           filter: `room_id=eq.${roomId}`,
         },
         async (payload) => {
-          // Ignore message if already present (prevents double)
+          console.log('Realtime new message payload:', payload);
           if (payload.new && payload.new.user_id !== user.id) {
-            // Fetch username only if not in state (otherwise fallback)
+            // Fetch username if not already available from a previous fetch or if profile isn't on payload
             let username = 'Unknown user';
-            const match = messages.find(msg => msg.id === payload.new.id);
-            if (match && match.profiles?.username) {
-              username = match.profiles.username;
-            } else {
-              // Only query if not already present
+            // Attempt to get username from existing messages (less queries)
+            const existingMsgWithProfile = messages.find(msg => msg.user_id === payload.new.user_id && msg.profiles?.username);
+            if (existingMsgWithProfile) {
+              username = existingMsgWithProfile.profiles.username;
+            } else if (payload.new.profiles?.username) { // Check if payload itself has it (if select was changed)
+                username = payload.new.profiles.username;
+            }
+            else {
               const { data: profileData } = await supabase
                 .from('profiles')
                 .select('username')
@@ -175,57 +191,84 @@ const Room = () => {
             }
             const messageWithUser = {
               ...payload.new,
-              profiles: { username }
+              profiles: { username } // Ensure profiles object structure
             };
             setMessages(prev => {
               const exists = prev.some(msg => msg.id === messageWithUser.id);
-              if (exists) return prev;
+              if (exists) return prev; // Avoid duplicates
               return [...prev, messageWithUser];
             });
           }
         }
       )
       .subscribe((status) => {
-        console.log('Messages channel status:', status);
+        console.log(`Messages channel (${roomId}) status:`, status);
+        if (status === 'CLOSED' || status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+            toast.error('Chat connection issue. Please refresh.');
+        }
       });
 
     // Media channel
     const mediaChannel = supabase
       .channel(`media_${roomId}`, {
         config: {
-          broadcast: { self: false },
+          broadcast: { self: false }, // Owner might not need to self-broadcast if UI updates directly
           presence: { key: user.id }
         }
       })
       .on(
         'postgres_changes',
         {
-          event: '*',
+          event: '*', // Listen to all changes (INSERT, UPDATE)
           schema: 'public',
           table: 'media_sessions',
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
+          console.log('Realtime media session payload:', payload);
           if (payload.new) {
-            const newSession = payload.new;
-            if (lastMediaUpdateRef.current === newSession.updated_at) return;
-            lastMediaUpdateRef.current = newSession.updated_at;
-            setCurrentMediaSession(newSession);
-            if (!isOwner && newSession.media_url !== youtubeUrl) {
-              setYoutubeUrl(newSession.media_url);
-              setTimeout(() => {
-                const iframe = playerRef.current;
-                if (iframe && newSession.media_url) {
-                  iframe.src = newSession.media_url;
-                }
-              }, 100);
-              toast.success('Video synced by room owner');
+            const newSessionData = payload.new;
+            
+            // Prevent processing the exact same update if timestamp hasn't changed.
+            // This is a safeguard, usually updated_at should change.
+            if (lastMediaUpdateRef.current && lastMediaUpdateRef.current === newSessionData.updated_at) {
+                console.warn('Media update skipped, same updated_at:', newSessionData.updated_at);
+                return;
             }
+            lastMediaUpdateRef.current = newSessionData.updated_at;
+
+            console.log('Applying media session update:', newSessionData);
+            setCurrentMediaSession(newSessionData); // This will update the iframe src via JSX
+
+            if (!isOwner) {
+              // The iframe src is primarily controlled by `currentMediaSession.media_url`
+              // Forcing iframe.src might be needed if React doesn't reliably reload on prop change for iframes with query params
+              const iframe = playerRef.current;
+              if (iframe && iframe.src !== newSessionData.media_url) {
+                console.log(`Non-owner: Updating iframe src from ${iframe.src} to ${newSessionData.media_url}`);
+                iframe.src = newSessionData.media_url; // Ensure it reloads with the new URL
+                toast.info('Video updated by room owner.');
+              } else if (iframe && iframe.src === newSessionData.media_url) {
+                console.log('Non-owner: Media session updated, URL is the same. Video should continue or restart based on autoplay.');
+              }
+              // Set local youtubeUrl state as well, though it's less critical for non-owners
+              setYoutubeUrl(newSessionData.media_url);
+            }
+          } else if (payload.eventType === 'DELETE' && payload.old?.id === currentMediaSession?.id) {
+            // Handle media session deletion (e.g., owner clears video)
+            console.log('Media session deleted:', payload.old);
+            setCurrentMediaSession(null);
+            setYoutubeUrl('');
+            if (playerRef.current) playerRef.current.src = '';
+            if (!isOwner) toast.info('Video stopped by room owner.');
           }
         }
       )
       .subscribe((status) => {
-        console.log('Media channel status:', status);
+        console.log(`Media channel (${roomId}) status:`, status);
+         if (status === 'CLOSED' || status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+            toast.error('Video sync connection issue. Please refresh.');
+        }
       });
 
     channelsRef.current = { messages: messagesChannel, media: mediaChannel };
@@ -271,7 +314,7 @@ const Room = () => {
     const messageContent = newMessage.trim();
     setSendingMessage(true);
     try {
-      const { data, error } = await supabase
+      const { data: insertedMessages, error } = await supabase
         .from('messages')
         .insert([{
           room_id: roomId,
@@ -283,22 +326,30 @@ const Room = () => {
           content,
           created_at,
           user_id,
-          profiles:user_id (username)
-        `)
-        .single();
+          profiles!inner(username)
+        `); // Removed .single(), expect an array. Use !inner to ensure profile exists.
 
       if (error) {
-        toast.error('Failed to send message');
+        console.error('Error sending message to Supabase:', error);
+        toast.error(`Failed to send message: ${error.message}`);
+        setSendingMessage(false);
         return;
       }
-      setMessages(prev => {
-        const exists = prev.some(msg => msg.id === data.id);
-        if (exists) return prev;
-        return [...prev, data];
-      });
+
+      if (!insertedMessages || insertedMessages.length === 0) {
+        console.error('Error sending message: No data returned after insert.');
+        toast.error('Failed to send message: No data returned from server.');
+        setSendingMessage(false);
+        return;
+      }
+      
+      const sentMessageData = insertedMessages[0];
+      // Manually add to local state. Realtime listener with self:false won't pick this up.
+      setMessages(prev => [...prev, sentMessageData]);
       setNewMessage('');
-    } catch (error) {
-      toast.error('Failed to send message');
+    } catch (err) { // Catch any other exceptions
+      console.error('Exception during sendMessage:', err);
+      toast.error(`Failed to send message: ${err.message || 'Unknown client-side error'}`);
     } finally {
       setSendingMessage(false);
     }
@@ -315,22 +366,51 @@ const Room = () => {
     }
     
     try {
-      const { error } = await supabase
-        .from('media_sessions')
-        .upsert({
-          room_id: roomId,
-          media_url: embedUrl,
-          media_type: 'youtube',
-          is_playing: true,
-          current_position: 0,
-          media_title: 'YouTube Video'
-        });
+      // Upsert will create if not exists, or update if exists based on room_id (if room_id is part of primary key or unique constraint for media_sessions)
+      // Assuming media_sessions has a unique constraint on room_id or pk is room_id for upsert to work as intended to update single session per room.
+      // If media_sessions.id is the PK, and we want one session per room, ensure upsert has a conflict target.
+      // Current schema: id is PK, room_id is FK. So upsert should target room_id if we want one session per room.
+      // Let's assume the intention is to update the existing media_session for the room or create one if none exists.
+      // This requires knowing the ID of the existing media_session or using a conflict target on room_id.
+      // For simplicity, if currentMediaSession exists, we update it, otherwise insert.
+      
+      const mediaData = {
+        room_id: roomId,
+        media_url: embedUrl,
+        media_type: 'youtube',
+        is_playing: true, // Assuming video starts playing
+        current_position: 0,
+        media_title: 'YouTube Video', // Could try to fetch title later
+        updated_at: new Date().toISOString(), // Explicitly set updated_at to ensure change
+      };
+
+      let operationError;
+
+      if (currentMediaSession?.id) {
+        const { error } = await supabase
+          .from('media_sessions')
+          .update(mediaData)
+          .eq('id', currentMediaSession.id)
+          .eq('room_id', roomId); // ensure we're updating the correct room's session
+          operationError = error;
+      } else {
+         const { error } = await supabase
+          .from('media_sessions')
+          .insert(mediaData)
+          .select() // To get back the inserted data, including new updated_at
+          .single(); // Assuming insert will give back the single new record
+          operationError = error;
+          // if (!operationError && newSessionData) setCurrentMediaSession(newSessionData); // Update local state immediately
+      }
         
-      if (error) {
-        console.error('Error updating media session:', error);
-        toast.error('Failed to update media');
+      if (operationError) {
+        console.error('Error updating media session:', operationError);
+        toast.error(`Failed to update media: ${operationError.message}`);
       } else {
         toast.success('Video updated for all viewers');
+        // The realtime channel should pick up this change for other users.
+        // Owner's view will also update via setCurrentMediaSession if we fetch after upsert, or rely on realtime if self=true.
+        // For now, let owner's UI update from direct state change / currentMediaSession if needed
       }
     } catch (error) {
       console.error('Error in handleYoutubeSubmit:', error);
@@ -338,20 +418,64 @@ const Room = () => {
     }
   };
 
+  const fetchCurrentMediaSession = async () => {
+    if (!roomId) return;
+    try {
+      const { data, error } = await supabase
+        .from('media_sessions')
+        .select('*')
+        .eq('room_id', roomId)
+        .maybeSingle(); // A room might not have a media session yet
+
+      if (error) {
+        console.error('Error fetching current media session:', error);
+        toast.error('Could not load current video.');
+        return;
+      }
+      if (data) {
+        setCurrentMediaSession(data);
+        setYoutubeUrl(data.media_url); // Set owner's input field if they are owner
+        // Ensure iframe loads initial video, especially if joining a room with an active session
+        setTimeout(() => { // Delay to ensure playerRef is available
+          if (playerRef.current && data.media_url) {
+            console.log('Setting initial iframe src:', data.media_url);
+            playerRef.current.src = data.media_url;
+          }
+        }, 100);
+      } else {
+        setCurrentMediaSession(null);
+        setYoutubeUrl('');
+      }
+    } catch (err) {
+      console.error('Exception fetching media session:', err);
+    }
+  };
+
   const getYoutubeEmbedUrl = (url) => {
     try {
+      let videoId;
       if (url.includes('youtube.com/watch')) {
-        const videoId = url.split('v=')[1]?.split('&')[0];
-        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+        const params = new URL(url).searchParams;
+        videoId = params.get('v');
       } else if (url.includes('youtu.be')) {
-        const videoId = url.split('youtu.be/')[1]?.split('?')[0];
-        if (videoId) return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+        videoId = new URL(url).pathname.substring(1);
       } else if (url.includes('youtube.com/embed')) {
-        return url.includes('autoplay=1') ? url : url + (url.includes('?') ? '&' : '?') + 'autoplay=1&enablejsapi=1';
+        // Already an embed URL, just ensure params
+        const embedUrl = new URL(url);
+        embedUrl.searchParams.set('autoplay', '1');
+        embedUrl.searchParams.set('enablejsapi', '1');
+        return embedUrl.toString();
       }
-      return url;
+      if (videoId) {
+        return `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+      }
+      // If not a recognized YouTube URL, but user submitted it, pass it through (less ideal)
+      // Or return null/empty to indicate invalidity
+      console.warn("Could not parse YouTube URL, returning as is:", url);
+      return url; // Fallback, might not work if not embeddable
     } catch (e) {
-      console.error('Error parsing YouTube URL:', e);
+      console.error('Error parsing YouTube URL:', e, url);
+      toast.error('Invalid YouTube URL format.');
       return '';
     }
   };
@@ -373,7 +497,7 @@ const Room = () => {
     }
   };
 
-  if (loading) {
+  if (loading && !room) { // Ensure room data is also checked if loading is primary flag
     return (
       <div className="min-h-screen bg-background p-8">
         <div className="max-w-6xl mx-auto">
@@ -397,7 +521,7 @@ const Room = () => {
           </Button>
           
           <div className="flex items-center gap-2">
-            {isOwner && (
+            {isOwner && ( // Only show members button to owner
               <Button 
                 variant="outline"
                 onClick={() => setShowMembers(!showMembers)}
@@ -427,18 +551,19 @@ const Room = () => {
           </div>
         </div>
 
-        <h1 className="text-3xl font-bold mb-8 text-foreground">{room?.name}</h1>
+        <h1 className="text-3xl font-bold mb-8 text-foreground">{room?.name || 'Room'}</h1>
         
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           {/* Media Player Section */}
           <div className="xl:col-span-3">
             <Card className="p-6 mb-4 bg-card border-border">
               <h2 className="text-xl font-semibold mb-4 text-card-foreground">Media Player</h2>
+              <p className="text-sm text-muted-foreground mb-2">Video URL is synced. Playback (play/pause/seek) is controlled locally on each device.</p>
               
               {isOwner ? (
                 <form onSubmit={handleYoutubeSubmit} className="flex gap-2 mb-4">
                   <Input
-                    value={youtubeUrl}
+                    value={youtubeUrl} // This state is for the owner's input field
                     onChange={(e) => setYoutubeUrl(e.target.value)}
                     placeholder="Enter YouTube URL"
                     className="flex-1 bg-background text-foreground border-input"
@@ -452,7 +577,7 @@ const Room = () => {
                 </form>
               ) : (
                 <div className="mb-4 text-sm text-muted-foreground">
-                  Video playback is controlled by the room owner
+                  Video playback is controlled by the room owner.
                 </div>
               )}
               
@@ -460,6 +585,7 @@ const Room = () => {
                 {currentMediaSession?.media_url ? (
                   <iframe
                     ref={playerRef}
+                    key={currentMediaSession.media_url} // Add key to force re-render on src change
                     src={currentMediaSession.media_url}
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                     allowFullScreen
@@ -512,7 +638,8 @@ const Room = () => {
                       }`}>
                         {message.user_id === user?.id
                           ? 'You'
-                          : message.profiles?.username || 'Unknown user'}
+                          // Ensure profiles and username exist before trying to access
+                          : message.profiles?.username || 'Unknown user'} 
                         {' · '}
                         {formatTime(message.created_at)}
                       </div>
